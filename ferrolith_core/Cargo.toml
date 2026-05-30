@@ -1,0 +1,13 @@
+[package]
+name = "ferrolith_core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+documentation.workspace = true
+homepage.workspace = true
+
+[dependencies]
+proc-macro2 = { version = "1.0.106", features = ["span-locations"] }
+syn = "2"

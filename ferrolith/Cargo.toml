@@ -1,0 +1,13 @@
+[package]
+name = "ferrolith"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+documentation.workspace = true
+homepage.workspace = true
+
+[dependencies]
+ferrolith_macro = { path = "../ferrolith_macro", version = "0.1" }
+ferrolith_core = { path = "../ferrolith_core", version = "0.1" }

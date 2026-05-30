@@ -1,0 +1,19 @@
+[package]
+name = "ferrolith_macro"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+documentation.workspace = true
+homepage.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+ferrolith_core = { path = "../ferrolith_core", version = "0.1" }
+heck = "0.5.0"
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full", "visit-mut"] }

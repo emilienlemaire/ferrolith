@@ -1,0 +1,295 @@
+use std::collections::HashMap;
+
+use proc_macro2::Span;
+
+use crate::{
+    automaton::State,
+    grammar::{Assoc, InternalGrammar, NonTerminalId, ProductionId, StateId, Symbol, TerminalId},
+};
+
+
+pub enum Action {
+    Shift(StateId),
+    Reduce(ProductionId),
+    Accept,
+    Error,
+}
+
+pub type Actions = HashMap<(StateId, TerminalId), Action>;
+pub type Gotos = HashMap<(StateId, NonTerminalId), StateId>;
+
+pub struct Tables {
+    pub actions: Actions,
+    pub gotos: Gotos,
+}
+
+pub fn build_tables(
+    states: Vec<State>,
+    transitions: HashMap<(StateId, Symbol), StateId>,
+    grammar: &InternalGrammar,
+) -> syn::Result<Tables> {
+    let mut tables = Tables {
+        actions: HashMap::new(),
+        gotos: HashMap::new(),
+    };
+
+    for (id, state) in states.iter().enumerate() {
+        for item in state {
+            let prod = &grammar.productions[item.prod];
+            let symbol = prod.rhs.get(item.dot);
+
+            if let Some(symbol @ Symbol::Terminal(symbol_id)) = symbol {
+                if let Some(state_id) = transitions.get(&(id, *symbol)) {
+                    try_insert(
+                        &mut tables.actions,
+                        id,
+                        *symbol_id,
+                        Action::Shift(*state_id),
+                        grammar,
+                    )?;
+                } else {
+                    return Err(syn::Error::new(
+                        Span::call_site(),
+                        "Failed to retrieve transition",
+                    ));
+                }
+            }
+
+            if symbol.is_none() {
+                // dot at the end
+                if prod.lhs == 0 {
+                    try_insert(&mut tables.actions, id, 0, Action::Accept, grammar)?;
+                } else {
+                    try_insert(
+                        &mut tables.actions,
+                        id,
+                        item.lookahead,
+                        Action::Reduce(item.prod),
+                        grammar,
+                    )?;
+                }
+            }
+        }
+    }
+
+    for ((state_id, symbol), dest) in transitions {
+        if let Symbol::NonTerminal(id) = symbol {
+            tables.gotos.insert((state_id, id), dest);
+        }
+    }
+
+    Ok(tables)
+}
+
+fn try_insert(
+    action: &mut HashMap<(StateId, TerminalId), Action>,
+    state: StateId,
+    terminal: TerminalId,
+    new_action: Action,
+    grammar: &InternalGrammar,
+) -> syn::Result<()> {
+    let key = (state, terminal);
+
+    let (prod_id, new_is_reduce) = {
+        let existing = match action.get(&key) {
+            None => {
+                action.insert(key, new_action);
+                return Ok(());
+            }
+            Some(e) => e,
+        };
+
+        match (existing, &new_action) {
+            (Action::Shift(_), Action::Shift(_)) => return Ok(()),
+            (Action::Reduce(p1), Action::Reduce(p2)) if p1 == p2 => return Ok(()),
+            (Action::Reduce(p1), Action::Reduce(p2)) => {
+                return Err(syn::Error::new(
+                    Span::call_site(),
+                    format!("Reduce/reduce conflict between productions {p1} and {p2}"),
+                ));
+            }
+            (Action::Shift(_), Action::Reduce(p)) => (*p, true),
+            (Action::Reduce(p), Action::Shift(_)) => (*p, false),
+            _ => return Ok(()),
+        }
+    };
+
+    let term_prec = grammar.prec_table.get(&terminal);
+    let prod_prec = grammar.productions[prod_id].prec;
+
+    match (term_prec, prod_prec) {
+        (Some((term_level, assoc)), Some(prod_level)) => {
+            if *term_level > prod_level {
+                if !new_is_reduce {
+                    action.insert(key, new_action);
+                }
+            } else if prod_level > *term_level {
+                if new_is_reduce {
+                    action.insert(key, new_action);
+                }
+            } else {
+                match assoc {
+                    Assoc::Left => {
+                        if new_is_reduce {
+                            action.insert(key, new_action);
+                        }
+                    }
+                    Assoc::Right => {
+                        if !new_is_reduce {
+                            action.insert(key, new_action);
+                        }
+                    }
+                    Assoc::NonAssoc => {
+                        action.insert(key, Action::Error);
+                    }
+                }
+            }
+        }
+        _ => {
+            // default: shift wins
+            if !new_is_reduce {
+                action.insert(key, new_action);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        automaton::build_automaton,
+        first::FirstSet,
+        grammar::{InternalGrammar, Production},
+    };
+    use proc_macro2::Span;
+
+    fn ident(s: &str) -> syn::Ident {
+        syn::Ident::new(s, Span::call_site())
+    }
+
+    // Grammar:
+    //   0: S' → E          (lhs=0)
+    //   1: E  → E Plus T   (lhs=1)
+    //   2: E  → T          (lhs=1)
+    //   3: T  → n          (lhs=2)
+    // Terminals:    0=EOF, 1=Plus, 2=n
+    // Nonterminals: 0=S',  1=E,    2=T
+    fn test_grammar() -> InternalGrammar {
+        InternalGrammar {
+            terminals: vec![ident("__eof__"), ident("Plus"), ident("n")],
+            nonterminals: vec![ident("__start__"), ident("E"), ident("T")],
+            productions: vec![
+                Production {
+                    lhs: 0,
+                    rhs: vec![Symbol::NonTerminal(1)],
+                    action: None,
+                    prec: None,
+                },
+                Production {
+                    lhs: 1,
+                    rhs: vec![
+                        Symbol::NonTerminal(1),
+                        Symbol::Terminal(1),
+                        Symbol::NonTerminal(2),
+                    ],
+                    action: Some(0),
+                    prec: None,
+                },
+                Production {
+                    lhs: 1,
+                    rhs: vec![Symbol::NonTerminal(2)],
+                    action: Some(1),
+                    prec: None,
+                },
+                Production {
+                    lhs: 2,
+                    rhs: vec![Symbol::Terminal(2)],
+                    action: Some(2),
+                    prec: None,
+                },
+            ],
+            start: 0,
+            prec_table: HashMap::new(),
+            ret_types: vec![None, None, None],
+            actions_order: vec![],
+        }
+    }
+
+    // Build tables and return (tables, [s0, s1, s2, s3, s4, s5]).
+    // State IDs are resolved via transitions so the test is robust against
+    // non-deterministic HashSet iteration order inside build_automaton.
+    fn build() -> (Tables, [StateId; 6]) {
+        let grammar = test_grammar();
+        let first = FirstSet::compute(&grammar.productions);
+        let automaton = build_automaton(&grammar, &first).unwrap();
+        let tr = &automaton.transitions;
+
+        let s0 = 0;
+        let s1 = tr[&(s0, Symbol::NonTerminal(1))]; // after E
+        let s2 = tr[&(s0, Symbol::NonTerminal(2))]; // after T
+        let s3 = tr[&(s0, Symbol::Terminal(2))];    // after n
+        let s4 = tr[&(s1, Symbol::Terminal(1))];    // after E+
+        let s5 = tr[&(s4, Symbol::NonTerminal(2))]; // after E+T
+
+        let tables =
+            build_tables(automaton.states, automaton.transitions, &grammar).unwrap();
+
+        (tables, [s0, s1, s2, s3, s4, s5])
+    }
+
+    #[test]
+    fn action_shift_n_from_initial() {
+        let (tables, [s0, _, _, s3, ..]) = build();
+        assert!(matches!(tables.actions[&(s0, 2)], Action::Shift(s) if s == s3));
+    }
+
+    #[test]
+    fn action_accept_on_eof_after_e() {
+        let (tables, [_, s1, ..]) = build();
+        assert!(matches!(tables.actions[&(s1, 0)], Action::Accept));
+    }
+
+    #[test]
+    fn action_shift_plus_after_e() {
+        let (tables, [_, s1, _, _, s4, _]) = build();
+        assert!(matches!(tables.actions[&(s1, 1)], Action::Shift(s) if s == s4));
+    }
+
+    #[test]
+    fn action_reduce_e_to_t_after_t() {
+        let (tables, [_, _, s2, ..]) = build();
+        assert!(matches!(tables.actions[&(s2, 0)], Action::Reduce(2)));
+        assert!(matches!(tables.actions[&(s2, 1)], Action::Reduce(2)));
+    }
+
+    #[test]
+    fn action_reduce_t_to_n_after_n() {
+        let (tables, [_, _, _, s3, ..]) = build();
+        assert!(matches!(tables.actions[&(s3, 0)], Action::Reduce(3)));
+        assert!(matches!(tables.actions[&(s3, 1)], Action::Reduce(3)));
+    }
+
+    #[test]
+    fn action_shift_n_after_e_plus() {
+        let (tables, [_, _, _, s3, s4, _]) = build();
+        assert!(matches!(tables.actions[&(s4, 2)], Action::Shift(s) if s == s3));
+    }
+
+    #[test]
+    fn action_reduce_e_to_e_plus_t_after_e_plus_t() {
+        let (tables, [_, _, _, _, _, s5]) = build();
+        assert!(matches!(tables.actions[&(s5, 0)], Action::Reduce(1)));
+        assert!(matches!(tables.actions[&(s5, 1)], Action::Reduce(1)));
+    }
+
+    #[test]
+    fn goto_table() {
+        let (tables, [s0, s1, s2, _, s4, s5]) = build();
+        assert_eq!(tables.gotos[&(s0, 1)], s1); // goto(I0, E) = I1
+        assert_eq!(tables.gotos[&(s0, 2)], s2); // goto(I0, T) = I2
+        assert_eq!(tables.gotos[&(s4, 2)], s5); // goto(I4, T) = I5
+    }
+}

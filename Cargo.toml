@@ -1,0 +1,20 @@
+[workspace]
+members = [
+  "ferrolith",
+  "ferrolith_core",
+  "ferrolith_macro",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "LGPL-3.0-only"
+readme = "README.md"
+repository = "https://github.com/emilienlemaire/ferrolith"
+documentation = "https://docs.rs/ferrolith"
+homepage = "https://github.com/emilienlemaire/ferrolith"
+
+[profile.bench]
+debug = true
+
