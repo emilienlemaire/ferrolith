@@ -3,10 +3,9 @@ use std::collections::HashMap;
 use proc_macro2::Span;
 
 use crate::{
-    automaton::State,
+    automaton::Automaton,
     grammar::{Assoc, InternalGrammar, NonTerminalId, ProductionId, StateId, Symbol, TerminalId},
 };
-
 
 pub enum Action {
     Shift(StateId),
@@ -18,20 +17,16 @@ pub enum Action {
 pub type Actions = HashMap<(StateId, TerminalId), Action>;
 pub type Gotos = HashMap<(StateId, NonTerminalId), StateId>;
 
-pub struct Tables {
-    pub actions: Actions,
-    pub gotos: Gotos,
-}
-
 pub fn build_tables(
-    states: Vec<State>,
-    transitions: HashMap<(StateId, Symbol), StateId>,
+    automaton: Automaton,
     grammar: &InternalGrammar,
-) -> syn::Result<Tables> {
-    let mut tables = Tables {
-        actions: HashMap::new(),
-        gotos: HashMap::new(),
-    };
+) -> syn::Result<(Actions, Gotos)> {
+    let Automaton {
+        states,
+        transitions,
+    } = automaton;
+    let mut actions: Actions = HashMap::new();
+    let mut gotos: Gotos = HashMap::new();
 
     for (id, state) in states.iter().enumerate() {
         for item in state {
@@ -41,7 +36,7 @@ pub fn build_tables(
             if let Some(symbol @ Symbol::Terminal(symbol_id)) = symbol {
                 if let Some(state_id) = transitions.get(&(id, *symbol)) {
                     try_insert(
-                        &mut tables.actions,
+                        &mut actions,
                         id,
                         *symbol_id,
                         Action::Shift(*state_id),
@@ -56,12 +51,11 @@ pub fn build_tables(
             }
 
             if symbol.is_none() {
-                // dot at the end
                 if prod.lhs == 0 {
-                    try_insert(&mut tables.actions, id, 0, Action::Accept, grammar)?;
+                    try_insert(&mut actions, id, 0, Action::Accept, grammar)?;
                 } else {
                     try_insert(
-                        &mut tables.actions,
+                        &mut actions,
                         id,
                         item.lookahead,
                         Action::Reduce(item.prod),
@@ -74,11 +68,11 @@ pub fn build_tables(
 
     for ((state_id, symbol), dest) in transitions {
         if let Symbol::NonTerminal(id) = symbol {
-            tables.gotos.insert((state_id, id), dest);
+            gotos.insert((state_id, id), dest);
         }
     }
 
-    Ok(tables)
+    Ok((actions, gotos))
 }
 
 fn try_insert(
@@ -218,78 +212,76 @@ mod tests {
         }
     }
 
-    // Build tables and return (tables, [s0, s1, s2, s3, s4, s5]).
+    // Build tables and return ((actions, gotos), [s0..s5]).
     // State IDs are resolved via transitions so the test is robust against
     // non-deterministic HashSet iteration order inside build_automaton.
-    fn build() -> (Tables, [StateId; 6]) {
+    fn build() -> ((Actions, Gotos), [StateId; 6]) {
         let grammar = test_grammar();
         let first = FirstSet::compute(&grammar.productions);
         let automaton = build_automaton(&grammar, &first).unwrap();
-        let tr = &automaton.transitions;
 
         let s0 = 0;
-        let s1 = tr[&(s0, Symbol::NonTerminal(1))]; // after E
-        let s2 = tr[&(s0, Symbol::NonTerminal(2))]; // after T
-        let s3 = tr[&(s0, Symbol::Terminal(2))];    // after n
-        let s4 = tr[&(s1, Symbol::Terminal(1))];    // after E+
-        let s5 = tr[&(s4, Symbol::NonTerminal(2))]; // after E+T
+        let s1 = automaton.transitions[&(s0, Symbol::NonTerminal(1))]; // after E
+        let s2 = automaton.transitions[&(s0, Symbol::NonTerminal(2))]; // after T
+        let s3 = automaton.transitions[&(s0, Symbol::Terminal(2))]; // after n
+        let s4 = automaton.transitions[&(s1, Symbol::Terminal(1))]; // after E+
+        let s5 = automaton.transitions[&(s4, Symbol::NonTerminal(2))]; // after E+T
 
-        let tables =
-            build_tables(automaton.states, automaton.transitions, &grammar).unwrap();
+        let tables = build_tables(automaton, &grammar).unwrap();
 
         (tables, [s0, s1, s2, s3, s4, s5])
     }
 
     #[test]
     fn action_shift_n_from_initial() {
-        let (tables, [s0, _, _, s3, ..]) = build();
-        assert!(matches!(tables.actions[&(s0, 2)], Action::Shift(s) if s == s3));
+        let ((actions, _), [s0, _, _, s3, ..]) = build();
+        assert!(matches!(actions[&(s0, 2)], Action::Shift(s) if s == s3));
     }
 
     #[test]
     fn action_accept_on_eof_after_e() {
-        let (tables, [_, s1, ..]) = build();
-        assert!(matches!(tables.actions[&(s1, 0)], Action::Accept));
+        let ((actions, _), [_, s1, ..]) = build();
+        assert!(matches!(actions[&(s1, 0)], Action::Accept));
     }
 
     #[test]
     fn action_shift_plus_after_e() {
-        let (tables, [_, s1, _, _, s4, _]) = build();
-        assert!(matches!(tables.actions[&(s1, 1)], Action::Shift(s) if s == s4));
+        let ((actions, _), [_, s1, _, _, s4, _]) = build();
+        assert!(matches!(actions[&(s1, 1)], Action::Shift(s) if s == s4));
     }
 
     #[test]
     fn action_reduce_e_to_t_after_t() {
-        let (tables, [_, _, s2, ..]) = build();
-        assert!(matches!(tables.actions[&(s2, 0)], Action::Reduce(2)));
-        assert!(matches!(tables.actions[&(s2, 1)], Action::Reduce(2)));
+        let ((actions, _), [_, _, s2, ..]) = build();
+        assert!(matches!(actions[&(s2, 0)], Action::Reduce(2)));
+        assert!(matches!(actions[&(s2, 1)], Action::Reduce(2)));
     }
 
     #[test]
     fn action_reduce_t_to_n_after_n() {
-        let (tables, [_, _, _, s3, ..]) = build();
-        assert!(matches!(tables.actions[&(s3, 0)], Action::Reduce(3)));
-        assert!(matches!(tables.actions[&(s3, 1)], Action::Reduce(3)));
+        let ((actions, _), [_, _, _, s3, ..]) = build();
+        assert!(matches!(actions[&(s3, 0)], Action::Reduce(3)));
+        assert!(matches!(actions[&(s3, 1)], Action::Reduce(3)));
     }
 
     #[test]
     fn action_shift_n_after_e_plus() {
-        let (tables, [_, _, _, s3, s4, _]) = build();
-        assert!(matches!(tables.actions[&(s4, 2)], Action::Shift(s) if s == s3));
+        let ((actions, _), [_, _, _, s3, s4, _]) = build();
+        assert!(matches!(actions[&(s4, 2)], Action::Shift(s) if s == s3));
     }
 
     #[test]
     fn action_reduce_e_to_e_plus_t_after_e_plus_t() {
-        let (tables, [_, _, _, _, _, s5]) = build();
-        assert!(matches!(tables.actions[&(s5, 0)], Action::Reduce(1)));
-        assert!(matches!(tables.actions[&(s5, 1)], Action::Reduce(1)));
+        let ((actions, _), [_, _, _, _, _, s5]) = build();
+        assert!(matches!(actions[&(s5, 0)], Action::Reduce(1)));
+        assert!(matches!(actions[&(s5, 1)], Action::Reduce(1)));
     }
 
     #[test]
     fn goto_table() {
-        let (tables, [s0, s1, s2, _, s4, s5]) = build();
-        assert_eq!(tables.gotos[&(s0, 1)], s1); // goto(I0, E) = I1
-        assert_eq!(tables.gotos[&(s0, 2)], s2); // goto(I0, T) = I2
-        assert_eq!(tables.gotos[&(s4, 2)], s5); // goto(I4, T) = I5
+        let ((_, gotos), [s0, s1, s2, _, s4, s5]) = build();
+        assert_eq!(gotos[&(s0, 1)], s1); // goto(I0, E) = I1
+        assert_eq!(gotos[&(s0, 2)], s2); // goto(I0, T) = I2
+        assert_eq!(gotos[&(s4, 2)], s5); // goto(I4, T) = I5
     }
 }

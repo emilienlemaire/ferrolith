@@ -32,19 +32,18 @@ pub fn grammar(input: TokenStream) -> TokenStream {
         Err(e) => return e.to_compile_error().into(),
     };
 
-    let tables =
-        match table::build_tables(automaton.states, automaton.transitions, &internal_grammar) {
-            Ok(t) => t,
-            Err(e) => return e.into_compile_error().into(),
-        };
+    let (actions, gotos) = match table::build_tables(automaton, &internal_grammar) {
+        Ok(t) => t,
+        Err(e) => return e.into_compile_error().into(),
+    };
 
     let value_enum = gen_value_enum(&grammar, &internal_grammar);
 
     let token_enum = gen_token_enum(&grammar, &internal_grammar);
 
-    let actions_fn = gen_action_function(&tables.actions);
+    let actions_fn = gen_action_function(&actions);
 
-    let gotos_fn = gen_goto_function(&tables.gotos);
+    let gotos_fn = gen_goto_function(&gotos);
 
     let reduce_fn = gen_reduce_function(&grammar, &internal_grammar);
 
@@ -294,6 +293,14 @@ fn gen_reduce_function(
                             let _ = #vN;
                         },
                     },
+                    GrammarSymbol::Capture { variant, fields } => {
+                        quote! {
+                            let (#(#fields),*) = match #vN {
+                                __Value::T_Token(#tokens_type::#variant(#(#fields),*)) => (#(#fields),*),
+                                _ => unreachable!(),
+                            };
+                        }
+                    }
                     _ => quote! {
                         let _ = #vN;
                     },

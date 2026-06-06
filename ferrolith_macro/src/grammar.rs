@@ -229,18 +229,6 @@ impl syn::parse::Parse for GrammarSymbol {
     }
 }
 
-impl GrammarSymbol {
-    pub fn is_named(&self, name: &syn::Ident) -> bool {
-        match self {
-            GrammarSymbol::Bound { sym, .. } => sym.is_named(name),
-            GrammarSymbol::Rule(ident) => ident == name,
-            GrammarSymbol::Token(ident) => ident == name,
-            GrammarSymbol::Capture { .. } => false,
-            GrammarSymbol::App { .. } => false,
-        }
-    }
-}
-
 pub(super) enum PrecParseError {
     NotPrec,
     InvalidPrec(syn::Error),
@@ -353,10 +341,12 @@ impl Arm {
                             ))),
                         },
                         None => Some(Err(syn::Error::new(
-                                    ident.span(),
-                                    format!("The `prec` attribute was used on a symbol without any \
-                                        precedence declared: `{ident}`.")
-                                    ))),
+                            ident.span(),
+                            format!(
+                                "The `prec` attribute was used on a symbol without any \
+                                        precedence declared: `{ident}`."
+                            ),
+                        ))),
                     },
                     Err(e) => Some(Err(e)),
                 }

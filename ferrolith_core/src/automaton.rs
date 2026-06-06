@@ -8,20 +8,20 @@ use crate::{
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct LR1Item {
-    pub prod: ProductionId,
-    pub dot: usize,
-    pub lookahead: TerminalId,
+pub(crate) struct LR1Item {
+    pub(crate) prod: ProductionId,
+    pub(crate) dot: usize,
+    pub(crate) lookahead: TerminalId,
 }
 
 pub struct Automaton {
-    pub states: Vec<State>,
-    pub transitions: HashMap<(StateId, Symbol), StateId>,
+    pub(crate) states: Vec<State>,
+    pub(crate) transitions: HashMap<(StateId, Symbol), StateId>,
 }
 
-pub type State = BTreeSet<LR1Item>;
+pub(crate) type State = BTreeSet<LR1Item>;
 
-pub fn closure(items: &mut State, grammar: &InternalGrammar, first: &FirstSet) {
+pub(crate) fn closure(items: &mut State, grammar: &InternalGrammar, first: &FirstSet) {
     loop {
         let old_items = items.clone();
         let mut new_items = BTreeSet::new();
@@ -64,7 +64,12 @@ pub fn closure(items: &mut State, grammar: &InternalGrammar, first: &FirstSet) {
     }
 }
 
-pub fn goto(state: &State, symbol: &Symbol, grammar: &InternalGrammar, first: &FirstSet) -> State {
+pub(crate) fn goto(
+    state: &State,
+    symbol: &Symbol,
+    grammar: &InternalGrammar,
+    first: &FirstSet,
+) -> State {
     let mut items = state
         .into_iter()
         .filter(|item| {
@@ -213,20 +218,52 @@ mod tests {
         let first = FirstSet::compute(&grammar.productions);
 
         let mut state = State::new();
-        state.insert(LR1Item { prod: 0, dot: 0, lookahead: 0 });
+        state.insert(LR1Item {
+            prod: 0,
+            dot: 0,
+            lookahead: 0,
+        });
         closure(&mut state, &grammar, &first);
 
         // [S' → •E, $]
-        assert!(state.contains(&LR1Item { prod: 0, dot: 0, lookahead: 0 }));
+        assert!(state.contains(&LR1Item {
+            prod: 0,
+            dot: 0,
+            lookahead: 0
+        }));
         // [E → •E+T, $] and [E → •E+T, +]
-        assert!(state.contains(&LR1Item { prod: 1, dot: 0, lookahead: 0 }));
-        assert!(state.contains(&LR1Item { prod: 1, dot: 0, lookahead: 1 }));
+        assert!(state.contains(&LR1Item {
+            prod: 1,
+            dot: 0,
+            lookahead: 0
+        }));
+        assert!(state.contains(&LR1Item {
+            prod: 1,
+            dot: 0,
+            lookahead: 1
+        }));
         // [E → •T, $] and [E → •T, +]
-        assert!(state.contains(&LR1Item { prod: 2, dot: 0, lookahead: 0 }));
-        assert!(state.contains(&LR1Item { prod: 2, dot: 0, lookahead: 1 }));
+        assert!(state.contains(&LR1Item {
+            prod: 2,
+            dot: 0,
+            lookahead: 0
+        }));
+        assert!(state.contains(&LR1Item {
+            prod: 2,
+            dot: 0,
+            lookahead: 1
+        }));
         // [T → •n, $] and [T → •n, +]
-        assert!(state.contains(&LR1Item { prod: 3, dot: 0, lookahead: 0 }));
-        assert!(state.contains(&LR1Item { prod: 3, dot: 0, lookahead: 1 }));
+        assert!(state.contains(&LR1Item {
+            prod: 3,
+            dot: 0,
+            lookahead: 0
+        }));
+        assert!(state.contains(&LR1Item {
+            prod: 3,
+            dot: 0,
+            lookahead: 1
+        }));
         assert_eq!(state.len(), 7);
     }
 
@@ -236,14 +273,30 @@ mod tests {
         let first = FirstSet::compute(&grammar.productions);
 
         let mut i0 = State::new();
-        i0.insert(LR1Item { prod: 0, dot: 0, lookahead: 0 });
+        i0.insert(LR1Item {
+            prod: 0,
+            dot: 0,
+            lookahead: 0,
+        });
         closure(&mut i0, &grammar, &first);
 
         // goto(I0, E) → {[S'→E•,$], [E→E•+T,$], [E→E•+T,+]}
         let i1 = goto(&i0, &Symbol::NonTerminal(1), &grammar, &first);
-        assert!(i1.contains(&LR1Item { prod: 0, dot: 1, lookahead: 0 }));
-        assert!(i1.contains(&LR1Item { prod: 1, dot: 1, lookahead: 0 }));
-        assert!(i1.contains(&LR1Item { prod: 1, dot: 1, lookahead: 1 }));
+        assert!(i1.contains(&LR1Item {
+            prod: 0,
+            dot: 1,
+            lookahead: 0
+        }));
+        assert!(i1.contains(&LR1Item {
+            prod: 1,
+            dot: 1,
+            lookahead: 0
+        }));
+        assert!(i1.contains(&LR1Item {
+            prod: 1,
+            dot: 1,
+            lookahead: 1
+        }));
         assert_eq!(i1.len(), 3);
     }
 
@@ -253,13 +306,25 @@ mod tests {
         let first = FirstSet::compute(&grammar.productions);
 
         let mut i0 = State::new();
-        i0.insert(LR1Item { prod: 0, dot: 0, lookahead: 0 });
+        i0.insert(LR1Item {
+            prod: 0,
+            dot: 0,
+            lookahead: 0,
+        });
         closure(&mut i0, &grammar, &first);
 
         // goto(I0, n) → {[T→n•,$], [T→n•,+]}
         let i3 = goto(&i0, &Symbol::Terminal(2), &grammar, &first);
-        assert!(i3.contains(&LR1Item { prod: 3, dot: 1, lookahead: 0 }));
-        assert!(i3.contains(&LR1Item { prod: 3, dot: 1, lookahead: 1 }));
+        assert!(i3.contains(&LR1Item {
+            prod: 3,
+            dot: 1,
+            lookahead: 0
+        }));
+        assert!(i3.contains(&LR1Item {
+            prod: 3,
+            dot: 1,
+            lookahead: 1
+        }));
         assert_eq!(i3.len(), 2);
     }
 
@@ -269,16 +334,36 @@ mod tests {
         let first = FirstSet::compute(&grammar.productions);
 
         let mut i0 = State::new();
-        i0.insert(LR1Item { prod: 0, dot: 0, lookahead: 0 });
+        i0.insert(LR1Item {
+            prod: 0,
+            dot: 0,
+            lookahead: 0,
+        });
         closure(&mut i0, &grammar, &first);
         let i1 = goto(&i0, &Symbol::NonTerminal(1), &grammar, &first);
 
         // goto(I1, Plus) → {[E→E+•T,$], [E→E+•T,+], [T→•n,$], [T→•n,+]}
         let i4 = goto(&i1, &Symbol::Terminal(1), &grammar, &first);
-        assert!(i4.contains(&LR1Item { prod: 1, dot: 2, lookahead: 0 }));
-        assert!(i4.contains(&LR1Item { prod: 1, dot: 2, lookahead: 1 }));
-        assert!(i4.contains(&LR1Item { prod: 3, dot: 0, lookahead: 0 }));
-        assert!(i4.contains(&LR1Item { prod: 3, dot: 0, lookahead: 1 }));
+        assert!(i4.contains(&LR1Item {
+            prod: 1,
+            dot: 2,
+            lookahead: 0
+        }));
+        assert!(i4.contains(&LR1Item {
+            prod: 1,
+            dot: 2,
+            lookahead: 1
+        }));
+        assert!(i4.contains(&LR1Item {
+            prod: 3,
+            dot: 0,
+            lookahead: 0
+        }));
+        assert!(i4.contains(&LR1Item {
+            prod: 3,
+            dot: 0,
+            lookahead: 1
+        }));
         assert_eq!(i4.len(), 4);
     }
 
@@ -305,4 +390,3 @@ mod tests {
         assert_eq!(s0_n, s4_n);
     }
 }
-

@@ -4,12 +4,12 @@ use crate::grammar::{NonTerminalId, Production, Symbol, TerminalId};
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct FirstSet {
-    pub first: HashMap<NonTerminalId, HashSet<TerminalId>>,
-    pub nullable: HashMap<NonTerminalId, bool>,
+    pub(crate) first: HashMap<NonTerminalId, HashSet<TerminalId>>,
+    pub(crate) nullable: HashMap<NonTerminalId, bool>,
 }
 
 impl FirstSet {
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self {
             first: HashMap::new(),
             nullable: HashMap::new(),
@@ -86,7 +86,7 @@ impl FirstSet {
         }
     }
 
-    pub fn first_of_sequence(
+    pub(crate) fn first_of_sequence(
         &self,
         sequence: &[Symbol],
         lookahead: TerminalId,
@@ -98,7 +98,7 @@ impl FirstSet {
                 Symbol::Terminal(id) => {
                     all_nullable = false;
                     set.insert(*id);
-                    break
+                    break;
                 }
                 Symbol::NonTerminal(id) => {
                     if let Some(fs) = self.first.get(id) {
@@ -108,8 +108,8 @@ impl FirstSet {
                         Some(true) => continue,
                         _ => {
                             all_nullable = false;
-                            break
-                        },
+                            break;
+                        }
                     }
                 }
             };
@@ -136,15 +136,34 @@ mod tests {
     // Nonterminals: 0=S',  1=E,    2=T
     fn prods() -> Vec<Production> {
         vec![
-            Production { lhs: 0, rhs: vec![Symbol::NonTerminal(1)], action: None, prec: None },
+            Production {
+                lhs: 0,
+                rhs: vec![Symbol::NonTerminal(1)],
+                action: None,
+                prec: None,
+            },
             Production {
                 lhs: 1,
-                rhs: vec![Symbol::NonTerminal(1), Symbol::Terminal(1), Symbol::NonTerminal(2)],
+                rhs: vec![
+                    Symbol::NonTerminal(1),
+                    Symbol::Terminal(1),
+                    Symbol::NonTerminal(2),
+                ],
                 action: Some(0),
                 prec: None,
             },
-            Production { lhs: 1, rhs: vec![Symbol::NonTerminal(2)], action: Some(1), prec: None },
-            Production { lhs: 2, rhs: vec![Symbol::Terminal(2)], action: Some(2), prec: None },
+            Production {
+                lhs: 1,
+                rhs: vec![Symbol::NonTerminal(2)],
+                action: Some(1),
+                prec: None,
+            },
+            Production {
+                lhs: 2,
+                rhs: vec![Symbol::Terminal(2)],
+                action: Some(2),
+                prec: None,
+            },
         ]
     }
 
@@ -165,9 +184,12 @@ mod tests {
 
     #[test]
     fn compute_nullable_epsilon_production() {
-        let prods = vec![
-            Production { lhs: 0, rhs: vec![], action: Some(0), prec: None },
-        ];
+        let prods = vec![Production {
+            lhs: 0,
+            rhs: vec![],
+            action: Some(0),
+            prec: None,
+        }];
         let firsts = FirstSet::compute(&prods);
         assert!(firsts.nullable[&0]);
     }
@@ -190,19 +212,19 @@ mod tests {
     fn first_of_sequence_nonnullable_nonterminal_stops_chain() {
         let firsts = FirstSet::compute(&prods());
         // FIRST([E, Plus], lookahead=0): E is not nullable, so only FIRST(E)={n=2}
-        let set = firsts.first_of_sequence(
-            &[Symbol::NonTerminal(1), Symbol::Terminal(1)],
-            0,
-        );
+        let set = firsts.first_of_sequence(&[Symbol::NonTerminal(1), Symbol::Terminal(1)], 0);
         assert_eq!(set, HashSet::from([2]));
     }
 
     #[test]
     fn first_of_sequence_nullable_nonterminal_continues_chain() {
         // A → ε, so FIRST([A, x=T(1)], lookahead=0) = FIRST(A) ∪ FIRST(x) = {} ∪ {1} = {1}
-        let prods = vec![
-            Production { lhs: 0, rhs: vec![], action: Some(0), prec: None },
-        ];
+        let prods = vec![Production {
+            lhs: 0,
+            rhs: vec![],
+            action: Some(0),
+            prec: None,
+        }];
         let firsts = FirstSet::compute(&prods);
         let set = firsts.first_of_sequence(&[Symbol::NonTerminal(0), Symbol::Terminal(1)], 0);
         assert!(set.contains(&1));
