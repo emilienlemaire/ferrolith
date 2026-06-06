@@ -1,0 +1,12 @@
+error: No starting rule found, please add the `#[start]` attribute to your starting rule.
+  --> tests/macro/fail/no_start.rs:7:1
+   |
+ 7 | / grammar! {
+ 8 | |     type Token = Tok;
+ 9 | |
+10 | |     fn rule() {
+...  |
+13 | | }
+   | |_^
+   |
+   = note: this error originates in the macro `grammar` (in Nightly builds, run with -Z macro-backtrace for more info)

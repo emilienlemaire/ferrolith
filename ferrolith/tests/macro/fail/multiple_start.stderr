@@ -1,0 +1,12 @@
+error: Multiple starting rule found, please only use one.
+  --> tests/macro/fail/multiple_start.rs:8:1
+   |
+ 8 | / grammar! {
+ 9 | |     type Token = Tok;
+10 | |
+11 | |     #[start]
+...  |
+20 | | }
+   | |_^
+   |
+   = note: this error originates in the macro `grammar` (in Nightly builds, run with -Z macro-backtrace for more info)

@@ -1,0 +1,5 @@
+error: Trying to declare precedence for a non-terminal symbol: `Undefined`
+  --> tests/macro/fail/undefined_prec_token.rs:11:12
+   |
+11 |     #[left(Undefined)]
+   |            ^^^^^^^^^
