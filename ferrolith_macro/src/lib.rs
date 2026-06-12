@@ -384,7 +384,7 @@ fn gen_parse_function(
     let token_type = grammar.tokens_type.ty.as_ref();
 
     quote! {
-        fn parse(
+        pub fn parse(
             mut tokens: impl Iterator<Item = #token_type>
         ) -> Result<#start_ret_type, ::ferrolith::ParseError<#token_type>> {
             let mut state_stack: Vec<usize> = Vec::with_capacity(64);
@@ -446,24 +446,24 @@ fn gen_incremental_api(
     let tokens_type = grammar.tokens_type.ty.as_ref();
 
     let types = quote! {
-        struct __ParserState {
+        pub struct ParserState {
             state_stack: Vec<usize>,
             value_stack: Vec<__Value>,
         }
 
-        enum Checkpoint {
-            InputNeeded(__ParserState),
+        pub enum Checkpoint {
+            InputNeeded(ParserState),
             Accepted(#start_ret_type),
             Rejected(::ferrolith::ParseError<#tokens_type>),
         }
     };
 
     let start_fn = quote! {
-        fn __start() -> Checkpoint {
+        pub fn start() -> Checkpoint {
             let mut state_stack = Vec::with_capacity(64);
             let value_stack = Vec::with_capacity(64);
             state_stack.push(0usize);
-            Checkpoint::InputNeeded(__ParserState { state_stack, value_stack })
+            Checkpoint::InputNeeded(ParserState { state_stack, value_stack })
         }
     };
 
@@ -495,18 +495,16 @@ fn gen_incremental_api(
     );
 
     let feed_fn = quote! {
-        fn __feed(mut state: __ParserState, token: __Token) -> Checkpoint {
-            let terminal_id = __token_id(&token);
+        pub fn feed(mut state: ParserState, token: Option<#tokens_type>) -> Checkpoint {
+            let terminal_id = __token_id_opt(token.as_ref());
             loop {
-                let current_state = state.state_stack.last().unwrap();
-                match __action(*current_state, terminal_id) {
+                let current_state = *state.state_stack.last().unwrap();
+                match __action(current_state, terminal_id) {
                     ::ferrolith::action::Action::Shift(s) => {
                         state.state_stack.push(s);
-                        if let __Token::Real(t) = token {
-                            state.value_stack.push(__Value::T_Token(t));
-                        } else {
-                            panic!("Not a real token in shift action.");
-                        }
+                        state.value_stack.push(__Value::T_Token(
+                            token.expect("shift on EOF is a parser bug"),
+                        ));
                         return Checkpoint::InputNeeded(state);
                     }
                     ::ferrolith::action::Action::Reduce(p) => {
@@ -526,16 +524,10 @@ fn gen_incremental_api(
                         return Checkpoint::Accepted(res);
                     }
                     ::ferrolith::action::Action::Error => {
-                        match token {
-                            __Token::Real(t) =>
-                                return Checkpoint::Rejected(
-                                    ::ferrolith::ParseError::UnexpectedToken(t)
-                                ),
-                            __Token::Eof =>
-                                return Checkpoint::Rejected(
-                                    ::ferrolith::ParseError::UnexpectedEof
-                                ),
-                        }
+                        return Checkpoint::Rejected(match token {
+                            Some(t) => ::ferrolith::ParseError::UnexpectedToken(t),
+                            None => ::ferrolith::ParseError::UnexpectedEof,
+                        });
                     }
                 }
             }
