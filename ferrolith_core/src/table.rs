@@ -21,12 +21,19 @@ pub type Gotos = HashMap<(StateId, NonTerminalId), StateId>;
 pub fn build_tables(
     automaton: Automaton,
     grammar: &InternalGrammar,
-) -> syn::Result<(Actions, Gotos, usize)> {
+) -> syn::Result<(Actions, Gotos, usize, Vec<Option<Symbol>>)> {
     let Automaton {
         states,
         transitions,
     } = automaton;
     let n_states = states.len();
+
+    // Invert transitions to get the incoming symbol for each state.
+    // State 0 has no incoming symbol (it's the initial state).
+    let mut incoming: Vec<Option<Symbol>> = vec![None; n_states];
+    for ((_, sym), &dest) in &transitions {
+        incoming[dest] = Some(sym.clone());
+    }
     let mut actions: Actions = HashMap::new();
     let mut gotos: Gotos = HashMap::new();
 
@@ -74,7 +81,7 @@ pub fn build_tables(
         }
     }
 
-    Ok((actions, gotos, n_states))
+    Ok((actions, gotos, n_states, incoming))
 }
 
 fn try_insert(
@@ -229,7 +236,7 @@ mod tests {
         let s4 = automaton.transitions[&(s1, Symbol::Terminal(1))]; // after E+
         let s5 = automaton.transitions[&(s4, Symbol::NonTerminal(2))]; // after E+T
 
-        let (actions, gotos, _) = build_tables(automaton, &grammar).unwrap();
+        let (actions, gotos, _, _) = build_tables(automaton, &grammar).unwrap();
 
         ((actions, gotos), [s0, s1, s2, s3, s4, s5])
     }

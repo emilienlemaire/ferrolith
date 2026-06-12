@@ -44,10 +44,34 @@ pub(super) struct PrecedenceDecl {
     pub(super) tokens: Vec<syn::Ident>,
 }
 
+#[derive(Default)]
+pub(super) struct ParserCfg {
+    pub(super) expose_automaton: bool,
+}
+
+impl ParserCfg {
+    fn apply(&mut self, attr: &syn::Attribute) -> syn::Result<()> {
+        let opts = attr.parse_args_with(
+            syn::punctuated::Punctuated::<syn::Ident, syn::Token![,]>::parse_terminated,
+        )?;
+        for opt in opts {
+            match opt.to_string().as_str() {
+                "expose_automaton" => self.expose_automaton = true,
+                other => return Err(syn::Error::new(
+                    opt.span(),
+                    format!("unknown parser_cfg option `{other}`"),
+                )),
+            }
+        }
+        Ok(())
+    }
+}
+
 pub(super) struct Grammar {
     pub(super) tokens_type: syn::ItemType,
     pub(super) precedences: Vec<PrecedenceDecl>,
     pub(super) rules: Vec<Rule>,
+    pub(super) cfg: ParserCfg,
 }
 
 fn partition_attrs(
@@ -70,6 +94,15 @@ impl syn::parse::Parse for Grammar {
         let mut token_type = None;
         let mut precs = vec![];
         let mut rules = vec![];
+        let mut cfg = ParserCfg::default();
+
+        for attr in input.call(syn::Attribute::parse_inner)? {
+            if attr.path().is_ident("parser_cfg") {
+                cfg.apply(&attr)?;
+            } else {
+                return Err(syn::Error::new_spanned(&attr, "unknown inner attribute in grammar!"));
+            }
+        }
 
         loop {
             if input.is_empty() {
@@ -102,6 +135,7 @@ impl syn::parse::Parse for Grammar {
             tokens_type,
             precedences: precs,
             rules,
+            cfg,
         })
     }
 }

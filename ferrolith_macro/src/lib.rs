@@ -32,7 +32,7 @@ pub fn grammar(input: TokenStream) -> TokenStream {
         Err(e) => return e.to_compile_error().into(),
     };
 
-    let (actions, gotos, n_states) = match table::build_tables(automaton, &internal_grammar) {
+    let (actions, gotos, n_states, incoming) = match table::build_tables(automaton, &internal_grammar) {
         Ok(t) => t,
         Err(e) => return e.into_compile_error().into(),
     };
@@ -54,6 +54,10 @@ pub fn grammar(input: TokenStream) -> TokenStream {
 
     let incremental_api = gen_incremental_api(&grammar, &internal_grammar);
 
+    let automaton_view = grammar.cfg.expose_automaton.then(|| {
+        gen_automaton_view(&internal_grammar, n_states, &incoming)
+    });
+
     quote! {
         #value_enum
 
@@ -69,6 +73,7 @@ pub fn grammar(input: TokenStream) -> TokenStream {
 
         #incremental_api
 
+        #automaton_view
     }
     .into()
 }
@@ -451,10 +456,16 @@ fn gen_incremental_api(
             value_stack: Vec<__Value>,
         }
 
+        impl ParserState {
+            pub fn current_state(&self) -> usize {
+                *self.state_stack.last().unwrap()
+            }
+        }
+
         pub enum Checkpoint {
             InputNeeded(ParserState),
             Accepted(#start_ret_type),
-            Rejected(::ferrolith::ParseError<#tokens_type>),
+            Rejected(ParserState, ::ferrolith::ParseError<#tokens_type>),
         }
     };
 
@@ -524,7 +535,7 @@ fn gen_incremental_api(
                         return Checkpoint::Accepted(res);
                     }
                     ::ferrolith::action::Action::Error => {
-                        return Checkpoint::Rejected(match token {
+                        return Checkpoint::Rejected(state, match token {
                             Some(t) => ::ferrolith::ParseError::UnexpectedToken(t),
                             None => ::ferrolith::ParseError::UnexpectedEof,
                         });
@@ -542,5 +553,88 @@ fn gen_incremental_api(
         #prod_info_fn
 
         #feed_fn
+    }
+}
+
+fn symbol_to_tokens(sym: &Symbol) -> proc_macro2::TokenStream {
+    match sym {
+        Symbol::Terminal(id) => quote!(::ferrolith::Symbol::Terminal(#id)),
+        Symbol::NonTerminal(id) => quote!(::ferrolith::Symbol::Nonterminal(#id)),
+    }
+}
+
+fn gen_automaton_view(
+    internal_grammar: &InternalGrammar,
+    n_states: usize,
+    incoming: &[Option<Symbol>],
+) -> proc_macro2::TokenStream {
+    let terminal_names: Vec<_> = internal_grammar
+        .terminals
+        .iter()
+        .map(|t| t.to_string())
+        .collect();
+    let nonterminal_names: Vec<_> = internal_grammar
+        .nonterminals
+        .iter()
+        .map(|nt| nt.to_string())
+        .collect();
+
+    // One static array per production holding its RHS symbols.
+    let rhs_statics: Vec<_> = internal_grammar
+        .productions
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let name = format_ident!("__PROD_RHS_{}", i);
+            let len = p.rhs.len();
+            let syms: Vec<_> = p.rhs.iter().map(symbol_to_tokens).collect();
+            quote! {
+                static #name: [::ferrolith::Symbol; #len] = [#(#syms,)*];
+            }
+        })
+        .collect();
+
+    let production_infos: Vec<_> = internal_grammar
+        .productions
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let name = format_ident!("__PROD_RHS_{}", i);
+            let lhs = p.lhs;
+            quote! {
+                ::ferrolith::ProductionInfo { lhs: #lhs, rhs: &#name }
+            }
+        })
+        .collect();
+
+    let state_infos: Vec<_> = incoming
+        .iter()
+        .map(|sym| match sym {
+            None => quote!(::ferrolith::StateInfo { incoming: None }),
+            Some(s) => {
+                let s = symbol_to_tokens(s);
+                quote!(::ferrolith::StateInfo { incoming: Some(#s) })
+            }
+        })
+        .collect();
+
+    quote! {
+        #(#rhs_statics)*
+
+        pub static AUTOMATON: ::ferrolith::AutomatonView = ::ferrolith::AutomatonView {
+            n_states: #n_states,
+            terminals: &[#(#terminal_names,)*],
+            nonterminals: &[#(#nonterminal_names,)*],
+            productions: &[#(#production_infos,)*],
+            states: &[#(#state_infos,)*],
+        };
+
+        pub fn action(state: usize, terminal: usize) -> ::ferrolith::action::Action {
+            __action(state, terminal)
+        }
+
+        pub fn goto(state: usize, nonterminal: usize) -> usize {
+            __goto(state, nonterminal)
+        }
     }
 }
