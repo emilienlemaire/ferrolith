@@ -32,18 +32,21 @@ pub fn grammar(input: TokenStream) -> TokenStream {
         Err(e) => return e.to_compile_error().into(),
     };
 
-    let (actions, gotos) = match table::build_tables(automaton, &internal_grammar) {
+    let (actions, gotos, n_states) = match table::build_tables(automaton, &internal_grammar) {
         Ok(t) => t,
         Err(e) => return e.into_compile_error().into(),
     };
+
+    let n_terminals = internal_grammar.terminals.len();
+    let n_nonterminals = internal_grammar.nonterminals.len();
 
     let value_enum = gen_value_enum(&grammar, &internal_grammar);
 
     let token_enum = gen_token_enum(&grammar, &internal_grammar);
 
-    let actions_fn = gen_action_function(&actions);
+    let actions_fn = gen_action_function(&actions, n_states, n_terminals);
 
-    let gotos_fn = gen_goto_function(&gotos);
+    let gotos_fn = gen_goto_function(&gotos, n_states, n_nonterminals);
 
     let reduce_fn = gen_reduce_function(&grammar, &internal_grammar);
 
@@ -171,52 +174,63 @@ fn gen_token_enum(
                 }
             }
         }
+
+        fn __token_id_opt(token: Option<&#token_type>) -> usize {
+            match token {
+                None => 0,
+                Some(t) => match t {
+                    #(#tokens_arms)*
+                    _ => unreachable!()
+                }
+            }
+        }
     }
 }
 
-fn gen_action_function(actions: &Actions) -> proc_macro2::TokenStream {
-    fn action_to_quote(action: &Action) -> proc_macro2::TokenStream {
-        match action {
-            Action::Shift(id) => quote! { ::ferrolith::action::Action::Shift(#id) },
-            Action::Reduce(id) => quote! { ::ferrolith::action::Action::Reduce(#id) },
-            Action::Accept => quote! { ::ferrolith::action::Action::Accept },
-            Action::Error => quote! { ::ferrolith::action::Action::Error },
-        }
+fn gen_action_function(
+    actions: &Actions,
+    n_states: usize,
+    n_terminals: usize,
+) -> proc_macro2::TokenStream {
+    let table_size = n_states * n_terminals;
+    let mut table = vec![quote!(::ferrolith::action::Action::Error); table_size];
+    for ((state_id, terminal_id), action) in actions {
+        let entry = match action {
+            Action::Error    => quote!(::ferrolith::action::Action::Error),
+            Action::Accept   => quote!(::ferrolith::action::Action::Accept),
+            Action::Shift(n) => quote!(::ferrolith::action::Action::Shift(#n)),
+            Action::Reduce(n)=> quote!(::ferrolith::action::Action::Reduce(#n)),
+        };
+        table[state_id * n_terminals + terminal_id] = entry;
     }
 
-    let action_arms: Vec<_> = actions
-        .iter()
-        .map(|((state_id, terminal_id), action)| {
-            let action_toks = action_to_quote(action);
-
-            quote! { (#state_id, #terminal_id) => #action_toks }
-        })
-        .collect();
-
     quote! {
+        const __N_TERMINALS: usize = #n_terminals;
+        static __ACTION_TABLE: [::ferrolith::action::Action; #table_size] = [#(#table,)*];
+
         fn __action(state: usize, terminal: usize) -> ::ferrolith::action::Action {
-            match (state, terminal) {
-                #(#action_arms,)*
-                _ => ::ferrolith::action::Action::Error
-            }
+            __ACTION_TABLE[state * __N_TERMINALS + terminal]
         }
     }
 }
 
-fn gen_goto_function(gotos: &Gotos) -> proc_macro2::TokenStream {
-    let goto_arms: Vec<_> = gotos
-        .iter()
-        .map(|((state_id, nonterminal_id), dest_id)| {
-            quote! { (#state_id, #nonterminal_id) => #dest_id }
-        })
-        .collect();
+fn gen_goto_function(
+    gotos: &Gotos,
+    n_states: usize,
+    n_nonterminals: usize,
+) -> proc_macro2::TokenStream {
+    let table_size = n_states * n_nonterminals;
+    let mut table = vec![usize::MAX; table_size];
+    for ((state_id, nonterminal_id), dest_id) in gotos {
+        table[state_id * n_nonterminals + nonterminal_id] = *dest_id;
+    }
 
     quote! {
+        const __N_NONTERMINALS: usize = #n_nonterminals;
+        static __GOTO_TABLE: [usize; #table_size] = [#(#table,)*];
+
         fn __goto(state: usize, nonterminal: usize) -> usize {
-            match (state, nonterminal) {
-                #(#goto_arms,)*
-                _ => unreachable!("Automaton should be complete by construction")
-            }
+            __GOTO_TABLE[state * __N_NONTERMINALS + nonterminal]
         }
     }
 }
@@ -360,24 +374,55 @@ fn gen_parse_function(
         None => syn::parse_quote!(()),
     };
 
+    let start_variant = format_ident!(
+        "N_{}",
+        internal_grammar.nonterminals[start_nt_id]
+            .to_string()
+            .to_pascal_case()
+    );
+
     let token_type = grammar.tokens_type.ty.as_ref();
 
     quote! {
         fn parse(
             mut tokens: impl Iterator<Item = #token_type>
         ) -> Result<#start_ret_type, ::ferrolith::ParseError<#token_type>> {
-            let mut checkpoint = __start();
+            let mut state_stack: Vec<usize> = Vec::with_capacity(64);
+            let mut value_stack: Vec<__Value> = Vec::with_capacity(64);
+            state_stack.push(0usize);
+
+            let mut token = tokens.next();
+            let mut terminal_id = __token_id_opt(token.as_ref());
+
             loop {
-                match checkpoint {
-                    Checkpoint::InputNeeded(state) => {
-                        let token = match tokens.next() {
-                            Some(t) => __Token::Real(t),
-                            None => __Token::Eof,
-                        };
-                        checkpoint = __feed(state, token);
+                let state = *state_stack.last().unwrap();
+                match __action(state, terminal_id) {
+                    ::ferrolith::action::Action::Shift(s) => {
+                        state_stack.push(s);
+                        value_stack.push(__Value::T_Token(token.unwrap()));
+                        token = tokens.next();
+                        terminal_id = __token_id_opt(token.as_ref());
                     }
-                    Checkpoint::Accepted(v) => return Ok(v),
-                    Checkpoint::Rejected(e) => return Err(e),
+                    ::ferrolith::action::Action::Reduce(p) => {
+                        let (lhs, rhs_len) = __prod_info(p);
+                        let result = __reduce(p, &mut value_stack);
+                        state_stack.truncate(state_stack.len() - rhs_len);
+                        let next = __goto(*state_stack.last().unwrap(), lhs);
+                        state_stack.push(next);
+                        value_stack.push(result);
+                    }
+                    ::ferrolith::action::Action::Accept => {
+                        return Ok(match value_stack.pop().unwrap() {
+                            __Value::#start_variant(v) => v,
+                            _ => unreachable!(),
+                        });
+                    }
+                    ::ferrolith::action::Action::Error => {
+                        return Err(match token {
+                            Some(t) => ::ferrolith::ParseError::UnexpectedToken(t),
+                            None => ::ferrolith::ParseError::UnexpectedEof,
+                        });
+                    }
                 }
             }
         }
@@ -415,42 +460,25 @@ fn gen_incremental_api(
 
     let start_fn = quote! {
         fn __start() -> Checkpoint {
-            let state_stack = vec![0usize];
-            let value_stack = vec![];
-            Checkpoint::InputNeeded( __ParserState { state_stack, value_stack })
+            let mut state_stack = Vec::with_capacity(64);
+            let value_stack = Vec::with_capacity(64);
+            state_stack.push(0usize);
+            Checkpoint::InputNeeded(__ParserState { state_stack, value_stack })
         }
     };
 
-    let prod_lhs_fn = {
+    let prod_info_fn = {
         let prod_arms = internal_grammar
             .productions
             .iter()
             .enumerate()
             .map(|(prod_id, prod)| {
-                let prod_lhs = prod.lhs;
-                quote! { #prod_id =>  #prod_lhs }
+                let lhs = prod.lhs;
+                let rhs_len = prod.rhs.len();
+                quote! { #prod_id => (#lhs, #rhs_len) }
             });
         quote! {
-            fn __prod_lhs(prod_id: usize) -> usize {
-                match prod_id {
-                    #(#prod_arms,)*
-                    _ => unreachable!(),
-                }
-            }
-        }
-    };
-
-    let prod_rhs_len_fn = {
-        let prod_arms = internal_grammar
-            .productions
-            .iter()
-            .enumerate()
-            .map(|(prod_id, prod)| {
-                let prod_len = prod.rhs.len();
-                quote! { #prod_id => #prod_len }
-            });
-        quote! {
-            fn __prod_rhs_len(prod_id: usize) -> usize {
+            fn __prod_info(prod_id: usize) -> (usize, usize) {
                 match prod_id {
                     #(#prod_arms,)*
                     _ => unreachable!(),
@@ -482,12 +510,9 @@ fn gen_incremental_api(
                         return Checkpoint::InputNeeded(state);
                     }
                     ::ferrolith::action::Action::Reduce(p) => {
-                        let lhs = __prod_lhs(p);
+                        let (lhs, rhs_len) = __prod_info(p);
                         let result = __reduce(p, &mut state.value_stack);
-                        let rhs_len = __prod_rhs_len(p);
-                        for _ in 0..rhs_len {
-                            state.state_stack.pop();
-                        }
+                        state.state_stack.truncate(state.state_stack.len() - rhs_len);
                         let next = __goto(*state.state_stack.last().unwrap(), lhs);
                         state.state_stack.push(next);
                         state.value_stack.push(result);
@@ -522,9 +547,7 @@ fn gen_incremental_api(
 
         #start_fn
 
-        #prod_lhs_fn
-
-        #prod_rhs_len_fn
+        #prod_info_fn
 
         #feed_fn
     }

@@ -7,6 +7,7 @@ use crate::{
     grammar::{Assoc, InternalGrammar, NonTerminalId, ProductionId, StateId, Symbol, TerminalId},
 };
 
+#[derive(Copy, Clone)]
 pub enum Action {
     Shift(StateId),
     Reduce(ProductionId),
@@ -20,11 +21,12 @@ pub type Gotos = HashMap<(StateId, NonTerminalId), StateId>;
 pub fn build_tables(
     automaton: Automaton,
     grammar: &InternalGrammar,
-) -> syn::Result<(Actions, Gotos)> {
+) -> syn::Result<(Actions, Gotos, usize)> {
     let Automaton {
         states,
         transitions,
     } = automaton;
+    let n_states = states.len();
     let mut actions: Actions = HashMap::new();
     let mut gotos: Gotos = HashMap::new();
 
@@ -72,7 +74,7 @@ pub fn build_tables(
         }
     }
 
-    Ok((actions, gotos))
+    Ok((actions, gotos, n_states))
 }
 
 fn try_insert(
@@ -227,9 +229,9 @@ mod tests {
         let s4 = automaton.transitions[&(s1, Symbol::Terminal(1))]; // after E+
         let s5 = automaton.transitions[&(s4, Symbol::NonTerminal(2))]; // after E+T
 
-        let tables = build_tables(automaton, &grammar).unwrap();
+        let (actions, gotos, _) = build_tables(automaton, &grammar).unwrap();
 
-        (tables, [s0, s1, s2, s3, s4, s5])
+        ((actions, gotos), [s0, s1, s2, s3, s4, s5])
     }
 
     #[test]

@@ -2,3 +2,4 @@
 .envrc
 _*
 Cargo.lock
+*_bench
