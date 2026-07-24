@@ -110,6 +110,8 @@ fn try_insert(
 ) -> syn::Result<()> {
     let key = (state, terminal);
 
+    let pending_conflict;
+
     let (prod_id, new_is_reduce) = {
         let existing = match action.get(&key) {
             None => {
@@ -160,7 +162,7 @@ fn try_insert(
                     let ident = &grammar.terminals[terminal];
                     (ident.to_string(), ident.span())
                 };
-                conflicts.push(ShiftReduceConflict {
+                pending_conflict = Some(ShiftReduceConflict {
                     reduce_span,
                     reduce_name,
                     terminal_span,
@@ -180,7 +182,7 @@ fn try_insert(
                     let ident = &grammar.terminals[terminal];
                     (ident.to_string(), ident.span())
                 };
-                conflicts.push(ShiftReduceConflict {
+                pending_conflict = Some(ShiftReduceConflict {
                     reduce_span,
                     reduce_name,
                     terminal_span,
@@ -225,6 +227,9 @@ fn try_insert(
         }
         _ => {
             // default: shift wins
+            if let Some(conflict) = pending_conflict {
+                conflicts.push(conflict);
+            }
             if !new_is_reduce {
                 action.insert(key, new_action);
             }
