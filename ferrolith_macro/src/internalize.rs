@@ -12,9 +12,9 @@ use crate::{
 
 struct TypeSubst<'a>(&'a [(syn::Ident, syn::Type)]);
 
-type RuleSet = HashMap<syn::Ident, Rule>;
+pub(super) type RuleSet = HashMap<syn::Ident, Rule>;
 
-pub(super) fn internalize(grammar: &Grammar) -> syn::Result<InternalGrammar> {
+pub(super) fn internalize(grammar: &Grammar) -> syn::Result<(InternalGrammar, RuleSet)> {
     let mut terminals = HashMap::new();
     let mut nonterminals = HashMap::new();
     let mut rule_set = RuleSet::new();
@@ -194,15 +194,18 @@ pub(super) fn internalize(grammar: &Grammar) -> syn::Result<InternalGrammar> {
         res_vec?
     };
 
-    Ok(InternalGrammar {
-        terminals,
-        nonterminals,
-        productions: prods,
-        start: 0usize,
-        prec_table,
-        ret_types,
-        actions_order,
-    })
+    Ok((
+        InternalGrammar {
+            terminals,
+            nonterminals,
+            productions: prods,
+            start: 0usize,
+            prec_table,
+            ret_types,
+            actions_order,
+        },
+        rule_set,
+    ))
 }
 
 fn get_symbol_terminal(symbol: &GrammarSymbol) -> Vec<syn::Ident> {
@@ -225,6 +228,9 @@ fn desargue_applications(rules: &mut RuleSet) -> syn::Result<()> {
     let mut top_level_symbols = vec![];
 
     for rule in rules.values() {
+        if !rule.parameters.is_empty() {
+            continue;
+        }
         for arm in &rule.arms {
             for symbol in &arm.terms {
                 top_level_symbols.push(symbol.clone());
@@ -317,8 +323,9 @@ fn replace_symbol(
     replacement: &GrammarSymbol,
 ) -> GrammarSymbol {
     match sym {
-        GrammarSymbol::Bound { name, sym: inner } => GrammarSymbol::Bound {
+        GrammarSymbol::Bound { name, mutable, sym: inner } => GrammarSymbol::Bound {
             name: name.clone(),
+            mutable: *mutable,
             sym: Box::new(replace_symbol(inner, param, replacement)),
         },
         GrammarSymbol::App { name, args } => GrammarSymbol::App {

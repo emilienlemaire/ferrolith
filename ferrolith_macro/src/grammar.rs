@@ -9,6 +9,7 @@ use crate::internalize::app_ident;
 pub(super) enum GrammarSymbol {
     Bound {
         name: syn::Ident,
+        mutable: bool,
         sym: Box<GrammarSymbol>,
     },
     Rule(syn::Ident),
@@ -59,10 +60,12 @@ impl ParserCfg {
             match opt.to_string().as_str() {
                 "expose_automaton" => self.expose_automaton = true,
                 "clonable_state" => self.clonable_state = true,
-                other => return Err(syn::Error::new(
-                    opt.span(),
-                    format!("unknown parser_cfg option `{other}`"),
-                )),
+                other => {
+                    return Err(syn::Error::new(
+                        opt.span(),
+                        format!("unknown parser_cfg option `{other}`"),
+                    ));
+                }
             }
         }
         Ok(())
@@ -102,7 +105,10 @@ impl syn::parse::Parse for Grammar {
             if attr.path().is_ident("parser_cfg") {
                 cfg.apply(&attr)?;
             } else {
-                return Err(syn::Error::new_spanned(&attr, "unknown inner attribute in grammar!"));
+                return Err(syn::Error::new_spanned(
+                    &attr,
+                    "unknown inner attribute in grammar!",
+                ));
             }
         }
 
@@ -220,6 +226,12 @@ impl syn::parse::Parse for Arm {
 
 impl syn::parse::Parse for GrammarSymbol {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let mutable = if input.peek(syn::Token![mut]) {
+            input.parse::<syn::Token![mut]>()?;
+            true
+        } else {
+            false
+        };
         let ident = input.parse::<syn::Ident>()?;
 
         if input.peek(syn::Token![@]) {
@@ -227,8 +239,13 @@ impl syn::parse::Parse for GrammarSymbol {
             let sym = input.parse::<GrammarSymbol>()?;
             return Ok(GrammarSymbol::Bound {
                 name: ident,
+                mutable,
                 sym: Box::new(sym),
             });
+        }
+
+        if mutable {
+            return Err(input.error("`mut` is only valid before a binding: `mut name @ sym`"));
         }
 
         if input.peek(syn::token::Paren) {

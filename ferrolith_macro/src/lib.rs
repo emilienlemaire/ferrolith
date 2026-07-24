@@ -11,7 +11,8 @@ use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::parse_macro_input;
 
-use crate::grammar::{Grammar, GrammarSymbol};
+use crate::grammar::{Grammar, GrammarSymbol, Rule};
+use crate::internalize::RuleSet;
 
 mod grammar;
 mod internalize;
@@ -20,8 +21,8 @@ mod internalize;
 pub fn grammar(input: TokenStream) -> TokenStream {
     let grammar = parse_macro_input!(input as Grammar);
 
-    let internal_grammar = match internalize::internalize(&grammar) {
-        Ok(g) => g,
+    let (internal_grammar, rule_set) = match internalize::internalize(&grammar) {
+        Ok(r) => r,
         Err(e) => return e.to_compile_error().into(),
     };
 
@@ -32,10 +33,11 @@ pub fn grammar(input: TokenStream) -> TokenStream {
         Err(e) => return e.to_compile_error().into(),
     };
 
-    let (actions, gotos, n_states, incoming) = match table::build_tables(automaton, &internal_grammar) {
-        Ok(t) => t,
-        Err(e) => return e.into_compile_error().into(),
-    };
+    let (actions, gotos, n_states, incoming) =
+        match table::build_tables(automaton, &internal_grammar) {
+            Ok(t) => t,
+            Err(e) => return e.into_compile_error().into(),
+        };
 
     let n_terminals = internal_grammar.terminals.len();
     let n_nonterminals = internal_grammar.nonterminals.len();
@@ -48,15 +50,16 @@ pub fn grammar(input: TokenStream) -> TokenStream {
 
     let gotos_fn = gen_goto_function(&gotos, n_states, n_nonterminals);
 
-    let reduce_fn = gen_reduce_function(&grammar, &internal_grammar);
+    let reduce_fn = gen_reduce_function(&grammar, &internal_grammar, &rule_set);
 
     let parse_fn = gen_parse_function(&grammar, &internal_grammar);
 
     let incremental_api = gen_incremental_api(&grammar, &internal_grammar);
 
-    let automaton_view = grammar.cfg.expose_automaton.then(|| {
-        gen_automaton_view(&internal_grammar, n_states, &incoming)
-    });
+    let automaton_view = grammar
+        .cfg
+        .expose_automaton
+        .then(|| gen_automaton_view(&internal_grammar, n_states, &incoming));
 
     quote! {
         #value_enum
@@ -99,7 +102,10 @@ fn gen_value_enum(
 
     let tokens_type = &grammar.tokens_type.ty;
 
-    let derive = grammar.cfg.clonable_state.then(|| quote! { #[derive(Clone)] });
+    let derive = grammar
+        .cfg
+        .clonable_state
+        .then(|| quote! { #[derive(Clone)] });
     quote! {
         #derive
         enum __Value {
@@ -203,10 +209,10 @@ fn gen_action_function(
     let mut table = vec![quote!(::ferrolith::action::Action::Error); table_size];
     for ((state_id, terminal_id), action) in actions {
         let entry = match action {
-            Action::Error    => quote!(::ferrolith::action::Action::Error),
-            Action::Accept   => quote!(::ferrolith::action::Action::Accept),
+            Action::Error => quote!(::ferrolith::action::Action::Error),
+            Action::Accept => quote!(::ferrolith::action::Action::Accept),
             Action::Shift(n) => quote!(::ferrolith::action::Action::Shift(#n)),
-            Action::Reduce(n)=> quote!(::ferrolith::action::Action::Reduce(#n)),
+            Action::Reduce(n) => quote!(::ferrolith::action::Action::Reduce(#n)),
         };
         table[state_id * n_terminals + terminal_id] = entry;
     }
@@ -245,6 +251,7 @@ fn gen_goto_function(
 fn gen_reduce_function(
     grammar: &Grammar,
     internal_grammar: &InternalGrammar,
+    rule_set: &RuleSet,
 ) -> proc_macro2::TokenStream {
     let mut prod_code = vec![];
 
@@ -253,12 +260,13 @@ fn gen_reduce_function(
     for (prod_id, production) in internal_grammar.productions.iter().enumerate() {
         if let Some(action_id) = production.action {
             let (rule_ident, arm_idx) = &internal_grammar.actions_order[action_id];
-            let arm = &grammar
+            let rule: &Rule = grammar
                 .rules
                 .iter()
                 .find(|rule| rule.name == *rule_ident)
-                .unwrap()
-                .arms[*arm_idx];
+                .or_else(|| rule_set.get(rule_ident))
+                .unwrap();
+            let arm = &rule.arms[*arm_idx];
             let lhs_ident = &internal_grammar.nonterminals[production.lhs];
             let lhs_variant = format_ident!("N_{}", lhs_ident.to_string().to_pascal_case());
             let has_payload = internal_grammar.ret_types[production.lhs].is_some();
@@ -269,51 +277,62 @@ fn gen_reduce_function(
                 let vN = format_ident!("__v{}", idx);
                 let assign = quote! { let #vN = value_stack.pop().unwrap(); };
                 let symbol_quote = match symbol {
-                    GrammarSymbol::Bound { name, sym } => match sym.as_ref() {
-                        GrammarSymbol::Rule(ident) => {
-                            let variant_ident =
-                                format_ident!("N_{}", ident.to_string().to_pascal_case());
-                            quote! {
-                                let #name = match #vN {
-                                    __Value::#variant_ident(v) => v,
-                                    _ => unreachable!()
-                                };
-                            }
-                        }
-                        GrammarSymbol::Capture { variant, fields } => {
+                    GrammarSymbol::Bound { name, mutable, sym } => {
+                        // Capture-in-Bound (e.g. `n @ Tok(x)`): the outer name is
+                        // unused — fields are destructured directly, same as the
+                        // non-Bound Capture path. `mut` is not applicable here.
+                        if let GrammarSymbol::Capture { variant, fields } = sym.as_ref() {
                             quote! {
                                 let (#(#fields),*) = match #vN {
                                     __Value::T_Token(#tokens_type::#variant(#(#fields),*)) => (#(#fields),*),
                                     _ => unreachable!(),
                                 };
                             }
-                        }
-                        GrammarSymbol::Token(_) => {
-                            quote! {
-                                let #name = match #vN {
-                                    __Value::T_Token(v) => v,
-                                    _ => unreachable!(),
-                                };
+                        } else {
+                            let value_expr = match sym.as_ref() {
+                                GrammarSymbol::Rule(ident) => {
+                                    let variant_ident =
+                                        format_ident!("N_{}", ident.to_string().to_pascal_case());
+                                    quote! {
+                                        match #vN {
+                                            __Value::#variant_ident(v) => v,
+                                            _ => unreachable!()
+                                        }
+                                    }
+                                }
+                                GrammarSymbol::Token(_) => {
+                                    quote! {
+                                        match #vN {
+                                            __Value::T_Token(v) => v,
+                                            _ => unreachable!(),
+                                        }
+                                    }
+                                }
+                                GrammarSymbol::App {
+                                    name: app_name,
+                                    args,
+                                } => {
+                                    let synthetic_ident = internalize::app_ident(app_name, args);
+                                    let variant_ident = format_ident!(
+                                        "N_{}",
+                                        synthetic_ident.to_string().to_pascal_case()
+                                    );
+                                    quote! {
+                                        match #vN {
+                                            __Value::#variant_ident(v) => v,
+                                            _ => unreachable!(),
+                                        }
+                                    }
+                                }
+                                _ => quote! { #vN },
+                            };
+                            if *mutable {
+                                quote! { let mut #name = #value_expr; }
+                            } else {
+                                quote! { let #name = #value_expr; }
                             }
                         }
-                        GrammarSymbol::App {
-                            name: app_name,
-                            args,
-                        } => {
-                            let synthetic_ident = internalize::app_ident(app_name, args);
-                            let variant_ident =
-                                format_ident!("N_{}", synthetic_ident.to_string().to_pascal_case());
-                            quote! {
-                                let #name = match #vN {
-                                    __Value::#variant_ident(v) => v,
-                                    _ => unreachable!(),
-                                };
-                            }
-                        }
-                        _ => quote! {
-                            let _ = #vN;
-                        },
-                    },
+                    }
                     GrammarSymbol::Capture { variant, fields } => {
                         quote! {
                             let (#(#fields),*) = match #vN {
@@ -452,7 +471,10 @@ fn gen_incremental_api(
 
     let tokens_type = grammar.tokens_type.ty.as_ref();
 
-    let derive = grammar.cfg.clonable_state.then(|| quote! { #[derive(Clone)] });
+    let derive = grammar
+        .cfg
+        .clonable_state
+        .then(|| quote! { #[derive(Clone)] });
 
     let types = quote! {
         #derive
