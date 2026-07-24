@@ -45,15 +45,20 @@ pub struct AutomatonView {
 }
 
 pub enum ParseError<T> {
-    UnexpectedToken(T),
-    UnexpectedEof,
+    UnexpectedToken {
+        token: T,
+        expected: Vec<&'static str>,
+    },
+    UnexpectedEof {
+        expected: Vec<&'static str>,
+    },
 }
 
 impl<T> std::fmt::Debug for ParseError<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ParseError::UnexpectedToken(_) => write!(f, "ParseError::UnexpectedToken(..)"),
-            ParseError::UnexpectedEof => write!(f, "ParseError::UnexpectedEof"),
+            ParseError::UnexpectedToken { .. } => write!(f, "ParseError::UnexpectedToken(..)"),
+            ParseError::UnexpectedEof { .. } => write!(f, "ParseError::UnexpectedEof"),
         }
     }
 }

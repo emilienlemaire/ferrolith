@@ -52,6 +52,8 @@ pub fn grammar(input: TokenStream) -> TokenStream {
 
     let token_enum = gen_token_enum(&grammar, &internal_grammar);
 
+    let expected_fn = gen_expected_tokens_fn(&internal_grammar);
+
     let actions_fn = gen_action_function(&actions, n_states, n_terminals);
 
     let gotos_fn = gen_goto_function(&gotos, n_states, n_nonterminals);
@@ -74,6 +76,8 @@ pub fn grammar(input: TokenStream) -> TokenStream {
 
         #token_enum
 
+        #expected_fn
+
         #actions_fn
 
         #gotos_fn
@@ -87,6 +91,37 @@ pub fn grammar(input: TokenStream) -> TokenStream {
         #automaton_view
     }
     .into()
+}
+
+fn gen_expected_tokens_fn(internal_grammar: &InternalGrammar) -> proc_macro2::TokenStream {
+    let len = internal_grammar.terminals.len();
+    let names: Vec<String> = internal_grammar
+        .terminals
+        .iter()
+        .enumerate()
+        .map(|(idx, i)| {
+            if idx == 0 {
+                "<eof>".into()
+            } else {
+                i.to_string()
+            }
+        })
+        .collect();
+
+    quote! {
+        static __TERMINAL_NAMES: [&str; #len] = [#(#names,)*];
+
+        fn __expected_tokens(state: usize) -> Vec<&'static str> {
+            let mut expected = vec![];
+            for t in 0..#len {
+                if __action(state, t) != ::ferrolith::action::Action::Error {
+                    expected.push(__TERMINAL_NAMES[t]);
+                }
+            }
+
+            expected
+        }
+    }
 }
 
 fn gen_shift_reduce_warnings(idx: usize, c: &ShiftReduceConflict) -> proc_macro2::TokenStream {
@@ -488,8 +523,13 @@ fn gen_parse_function(
                     }
                     ::ferrolith::action::Action::Error => {
                         return Err(match token {
-                            Some(t) => ::ferrolith::ParseError::UnexpectedToken(t),
-                            None => ::ferrolith::ParseError::UnexpectedEof,
+                            Some(t) => ::ferrolith::ParseError::UnexpectedToken {
+                                token: t,
+                                expected: __expected_tokens(state)
+                            },
+                            None => ::ferrolith::ParseError::UnexpectedEof {
+                                expected: __expected_tokens(state)
+                            },
                         });
                     }
                 }
@@ -605,9 +645,15 @@ fn gen_incremental_api(
                         return Checkpoint::Accepted(res);
                     }
                     ::ferrolith::action::Action::Error => {
+                        let expected = __expected_tokens(current_state);
                         return Checkpoint::Rejected(state, match token {
-                            Some(t) => ::ferrolith::ParseError::UnexpectedToken(t),
-                            None => ::ferrolith::ParseError::UnexpectedEof,
+                            Some(t) => ::ferrolith::ParseError::UnexpectedToken {
+                                token: t,
+                                expected
+                            },
+                            None => ::ferrolith::ParseError::UnexpectedEof {
+                                expected
+                            },
                         });
                     }
                 }

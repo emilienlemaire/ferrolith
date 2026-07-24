@@ -7,7 +7,7 @@ use crate::{
     grammar::{Assoc, InternalGrammar, NonTerminalId, ProductionId, StateId, Symbol, TerminalId},
 };
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, PartialEq, Eq)]
 pub enum Action {
     Shift(StateId),
     Reduce(ProductionId),
