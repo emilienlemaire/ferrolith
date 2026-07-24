@@ -1,0 +1,5 @@
+error: unknown parser_cfg option `turbo_mode`
+ --> tests/macro/fail/unknown_parser_cfg.rs:8:19
+  |
+8 |     #![parser_cfg(turbo_mode)]
+  |                   ^^^^^^^^^^

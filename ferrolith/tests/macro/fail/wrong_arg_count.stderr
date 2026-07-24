@@ -1,0 +1,5 @@
+error: Invalid number of arguments for `pair`, expecting 2 found 1
+  --> tests/macro/fail/wrong_arg_count.rs:17:14
+   |
+17 |         (p @ pair(expr)) => p,
+   |              ^^^^

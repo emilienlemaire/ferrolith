@@ -1,0 +1,5 @@
+error: `mut` is only valid before a binding: `mut name @ sym`
+  --> tests/macro/fail/mut_without_binding.rs:12:17
+   |
+12 |         (mut Num(n)) => n,
+   |                 ^

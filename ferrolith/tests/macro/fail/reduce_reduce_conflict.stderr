@@ -1,0 +1,12 @@
+error: Reduce/reduce conflict between productions 3 and 4
+  --> tests/macro/fail/reduce_reduce_conflict.rs:10:1
+   |
+10 | / grammar! {
+11 | |     type Token = Tok;
+12 | |
+13 | |     #[start]
+...  |
+26 | | }
+   | |_^
+   |
+   = note: this error originates in the macro `grammar` (in Nightly builds, run with -Z macro-backtrace for more info)
