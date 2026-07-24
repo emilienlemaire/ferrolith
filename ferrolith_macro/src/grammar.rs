@@ -47,6 +47,7 @@ pub(super) struct PrecedenceDecl {
 #[derive(Default)]
 pub(super) struct ParserCfg {
     pub(super) expose_automaton: bool,
+    pub(super) clonable_state: bool,
 }
 
 impl ParserCfg {
@@ -57,6 +58,7 @@ impl ParserCfg {
         for opt in opts {
             match opt.to_string().as_str() {
                 "expose_automaton" => self.expose_automaton = true,
+                "clonable_state" => self.clonable_state = true,
                 other => return Err(syn::Error::new(
                     opt.span(),
                     format!("unknown parser_cfg option `{other}`"),

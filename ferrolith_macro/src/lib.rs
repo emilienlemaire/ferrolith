@@ -99,7 +99,9 @@ fn gen_value_enum(
 
     let tokens_type = &grammar.tokens_type.ty;
 
+    let derive = grammar.cfg.clonable_state.then(|| quote! { #[derive(Clone)] });
     quote! {
+        #derive
         enum __Value {
             #(#non_term_variants,)*
             T_Token(#tokens_type),
@@ -450,7 +452,10 @@ fn gen_incremental_api(
 
     let tokens_type = grammar.tokens_type.ty.as_ref();
 
+    let derive = grammar.cfg.clonable_state.then(|| quote! { #[derive(Clone)] });
+
     let types = quote! {
+        #derive
         pub struct ParserState {
             state_stack: Vec<usize>,
             value_stack: Vec<__Value>,
