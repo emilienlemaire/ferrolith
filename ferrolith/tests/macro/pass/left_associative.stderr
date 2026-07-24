@@ -1,0 +1,13 @@
+warning: use of deprecated constant `__ferrolith_sr_r0`: shift/reduce conflict: shifting `Plus` wins over reducing `expr`
+  --> tests/macro/pass/left_associative.rs:14:8
+   |
+14 |     fn expr() -> i64 {
+   |        ^^^^
+   |
+   = note: `#[warn(deprecated)]` on by default
+
+warning: use of deprecated constant `__ferrolith_sr_t0`: shift/reduce conflict: shifting `Plus` wins over reducing `expr`
+  --> tests/macro/pass/left_associative.rs:16:20
+   |
+16 |         (l @ expr, Plus, r @ expr) => l + r,
+   |                    ^^^^

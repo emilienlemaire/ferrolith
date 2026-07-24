@@ -4,11 +4,11 @@ use ferrolith_core::{
     automaton,
     first::FirstSet,
     grammar::{InternalGrammar, Symbol},
-    table::{self, Action, Actions, Gotos},
+    table::{self, Action, Actions, Gotos, ShiftReduceConflict},
 };
 use heck::ToPascalCase;
 use proc_macro::TokenStream;
-use quote::{format_ident, quote};
+use quote::{format_ident, quote, quote_spanned};
 use syn::parse_macro_input;
 
 use crate::grammar::{Grammar, GrammarSymbol, Rule};
@@ -33,11 +33,17 @@ pub fn grammar(input: TokenStream) -> TokenStream {
         Err(e) => return e.to_compile_error().into(),
     };
 
-    let (actions, gotos, n_states, incoming) =
+    let (actions, gotos, n_states, incoming, conflicts) =
         match table::build_tables(automaton, &internal_grammar) {
             Ok(t) => t,
             Err(e) => return e.into_compile_error().into(),
         };
+
+    let warnings: Vec<_> = conflicts
+        .iter()
+        .enumerate()
+        .map(|(i, c)| gen_shift_reduce_warnings(i, c))
+        .collect();
 
     let n_terminals = internal_grammar.terminals.len();
     let n_nonterminals = internal_grammar.nonterminals.len();
@@ -62,6 +68,8 @@ pub fn grammar(input: TokenStream) -> TokenStream {
         .then(|| gen_automaton_view(&internal_grammar, n_states, &incoming));
 
     quote! {
+        #(#warnings)*
+
         #value_enum
 
         #token_enum
@@ -79,6 +87,41 @@ pub fn grammar(input: TokenStream) -> TokenStream {
         #automaton_view
     }
     .into()
+}
+
+fn gen_shift_reduce_warnings(idx: usize, c: &ShiftReduceConflict) -> proc_macro2::TokenStream {
+    let msg = format!(
+        "shift/reduce conflict: shifting `{}` wins over reducing `{}`",
+        c.terminal_name, c.reduce_name
+    );
+
+    let reduce_item = format_ident!("__ferrolith_sr_r{}", idx, span = c.reduce_span);
+    let terminal_item = format_ident!("__ferrolith_sr_t{}", idx, span = c.terminal_span);
+
+    let define_reduce = quote! {
+        #[deprecated = #msg]
+        #[doc(hidden)]
+        #[allow(non_upper_case_globals)]
+        const #reduce_item: () = ();
+    };
+
+    let use_reduce = quote_spanned! { c.reduce_span => const _ : () = #reduce_item; };
+
+    let define_terminal = quote! {
+        #[deprecated = #msg]
+        #[doc(hidden)]
+        #[allow(non_upper_case_globals)]
+        const #terminal_item: () = ();
+    };
+
+    let use_terminal = quote_spanned! { c.terminal_span => const _ : () = #terminal_item; };
+
+    quote! {
+        #define_reduce
+        #use_reduce
+        #define_terminal
+        #use_terminal
+    }
 }
 
 fn gen_value_enum(

@@ -1,12 +1,11 @@
-error: Reduce/reduce conflict between productions 3 and 4
-  --> tests/macro/fail/reduce_reduce_conflict.rs:10:1
+error: reduce/reduce conflict with `b_item`
+  --> tests/macro/fail/reduce_reduce_conflict.rs:19:8
    |
-10 | / grammar! {
-11 | |     type Token = Tok;
-12 | |
-13 | |     #[start]
-...  |
-26 | | }
-   | |_^
+19 |     fn a_item() -> i64 {
+   |        ^^^^^^
+
+error: reduce/reduce conflict with `a_item`
+  --> tests/macro/fail/reduce_reduce_conflict.rs:23:8
    |
-   = note: this error originates in the macro `grammar` (in Nightly builds, run with -Z macro-backtrace for more info)
+23 |     fn b_item() -> i64 {
+   |        ^^^^^^

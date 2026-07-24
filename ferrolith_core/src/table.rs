@@ -18,15 +18,29 @@ pub enum Action {
 pub type Actions = HashMap<(StateId, TerminalId), Action>;
 pub type Gotos = HashMap<(StateId, NonTerminalId), StateId>;
 
+pub struct ShiftReduceConflict {
+    pub reduce_span: Span,
+    pub reduce_name: String,
+    pub terminal_span: Span,
+    pub terminal_name: String,
+}
+
 pub fn build_tables(
     automaton: Automaton,
     grammar: &InternalGrammar,
-) -> syn::Result<(Actions, Gotos, usize, Vec<Option<Symbol>>)> {
+) -> syn::Result<(
+    Actions,
+    Gotos,
+    usize,
+    Vec<Option<Symbol>>,
+    Vec<ShiftReduceConflict>,
+)> {
     let Automaton {
         states,
         transitions,
     } = automaton;
     let n_states = states.len();
+    let mut conflicts = vec![];
 
     // Invert transitions to get the incoming symbol for each state.
     // State 0 has no incoming symbol (it's the initial state).
@@ -46,6 +60,7 @@ pub fn build_tables(
                 if let Some(state_id) = transitions.get(&(id, *symbol)) {
                     try_insert(
                         &mut actions,
+                        &mut conflicts,
                         id,
                         *symbol_id,
                         Action::Shift(*state_id),
@@ -61,10 +76,11 @@ pub fn build_tables(
 
             if symbol.is_none() {
                 if prod.lhs == 0 {
-                    try_insert(&mut actions, id, 0, Action::Accept, grammar)?;
+                    try_insert(&mut actions, &mut conflicts, id, 0, Action::Accept, grammar)?;
                 } else {
                     try_insert(
                         &mut actions,
+                        &mut conflicts,
                         id,
                         item.lookahead,
                         Action::Reduce(item.prod),
@@ -81,11 +97,12 @@ pub fn build_tables(
         }
     }
 
-    Ok((actions, gotos, n_states, incoming))
+    Ok((actions, gotos, n_states, incoming, conflicts))
 }
 
 fn try_insert(
     action: &mut HashMap<(StateId, TerminalId), Action>,
+    conflicts: &mut Vec<ShiftReduceConflict>,
     state: StateId,
     terminal: TerminalId,
     new_action: Action,
@@ -106,13 +123,71 @@ fn try_insert(
             (Action::Shift(_), Action::Shift(_)) => return Ok(()),
             (Action::Reduce(p1), Action::Reduce(p2)) if p1 == p2 => return Ok(()),
             (Action::Reduce(p1), Action::Reduce(p2)) => {
-                return Err(syn::Error::new(
-                    Span::call_site(),
-                    format!("Reduce/reduce conflict between productions {p1} and {p2}"),
+                let info_of = |prod_id: usize| {
+                    grammar.productions[prod_id]
+                        .action
+                        .map(|a| {
+                            let (ident, _) = &grammar.actions_order[a];
+                            (ident.span(), ident.to_string())
+                        })
+                        .unwrap_or_else(|| (Span::call_site(), format!("production {prod_id}")))
+                };
+                let (span1, name1) = info_of(*p1);
+                let (span2, name2) = info_of(*p2);
+                // Sort by name so the error order is deterministic regardless
+                // of which production was inserted into the table first.
+                let ((sa, na), (sb, nb)) = if name1 <= name2 {
+                    ((span1, name1), (span2, name2))
+                } else {
+                    ((span2, name2), (span1, name1))
+                };
+                let mut err = syn::Error::new(sa, format!("reduce/reduce conflict with `{nb}`"));
+                err.combine(syn::Error::new(
+                    sb,
+                    format!("reduce/reduce conflict with `{na}`"),
                 ));
+                return Err(err);
             }
-            (Action::Shift(_), Action::Reduce(p)) => (*p, true),
-            (Action::Reduce(p), Action::Shift(_)) => (*p, false),
+            (Action::Shift(_), Action::Reduce(p)) => {
+                let action_id = grammar.productions[*p].action;
+                let (reduce_name, reduce_span) = if let Some(action_id) = action_id {
+                    let ident = &grammar.actions_order[action_id].0;
+                    (ident.to_string(), ident.span())
+                } else {
+                    (format!("production {p}"), Span::call_site())
+                };
+                let (terminal_name, terminal_span) = {
+                    let ident = &grammar.terminals[terminal];
+                    (ident.to_string(), ident.span())
+                };
+                conflicts.push(ShiftReduceConflict {
+                    reduce_span,
+                    reduce_name,
+                    terminal_span,
+                    terminal_name,
+                });
+                (*p, true)
+            }
+            (Action::Reduce(p), Action::Shift(_)) => {
+                let action_id = grammar.productions[*p].action;
+                let (reduce_name, reduce_span) = if let Some(action_id) = action_id {
+                    let ident = &grammar.actions_order[action_id].0;
+                    (ident.to_string(), ident.span())
+                } else {
+                    (format!("production {p}"), Span::call_site())
+                };
+                let (terminal_name, terminal_span) = {
+                    let ident = &grammar.terminals[terminal];
+                    (ident.to_string(), ident.span())
+                };
+                conflicts.push(ShiftReduceConflict {
+                    reduce_span,
+                    reduce_name,
+                    terminal_span,
+                    terminal_name,
+                });
+                (*p, false)
+            }
             _ => return Ok(()),
         }
     };
@@ -236,7 +311,7 @@ mod tests {
         let s4 = automaton.transitions[&(s1, Symbol::Terminal(1))]; // after E+
         let s5 = automaton.transitions[&(s4, Symbol::NonTerminal(2))]; // after E+T
 
-        let (actions, gotos, _, _) = build_tables(automaton, &grammar).unwrap();
+        let (actions, gotos, _, _, _) = build_tables(automaton, &grammar).unwrap();
 
         ((actions, gotos), [s0, s1, s2, s3, s4, s5])
     }
