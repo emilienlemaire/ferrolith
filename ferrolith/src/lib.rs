@@ -57,8 +57,37 @@ pub enum ParseError<T> {
 impl<T> std::fmt::Debug for ParseError<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ParseError::UnexpectedToken { .. } => write!(f, "ParseError::UnexpectedToken(..)"),
-            ParseError::UnexpectedEof { .. } => write!(f, "ParseError::UnexpectedEof"),
+            ParseError::UnexpectedToken { expected, .. } => f
+                .debug_struct("UnexpectedToken")
+                .field("expected", expected)
+                .finish_non_exhaustive(),
+            ParseError::UnexpectedEof { expected } => f
+                .debug_struct("UnexpectedEof")
+                .field("expected", expected)
+                .finish(),
         }
     }
 }
+
+impl<T: std::fmt::Display> std::fmt::Display for ParseError<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ParseError::UnexpectedToken { token, expected } => {
+                write!(f, "unexpected token {token}")?;
+                if !expected.is_empty() {
+                    write!(f, ", expected one of: {}", expected.join(", "))?;
+                }
+                Ok(())
+            }
+            ParseError::UnexpectedEof { expected } => {
+                write!(f, "unexpected end of input")?;
+                if !expected.is_empty() {
+                    write!(f, ", expected one of: {}", expected.join(", "))?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+impl<T: std::fmt::Display> std::error::Error for ParseError<T> {}
