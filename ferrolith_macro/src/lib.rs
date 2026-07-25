@@ -11,7 +11,7 @@ use proc_macro::TokenStream;
 use quote::{format_ident, quote, quote_spanned};
 use syn::parse_macro_input;
 
-use crate::grammar::{Grammar, GrammarSymbol, Rule};
+use crate::{grammar::{Grammar, GrammarSymbol, Rule}, internalize::app_ident};
 use crate::internalize::RuleSet;
 
 mod grammar;
@@ -350,10 +350,12 @@ fn gen_reduce_function(
             let has_payload = internal_grammar.ret_types[production.lhs].is_some();
 
             let mut arms_assigns = vec![];
+            let rhs_len = arm.terms.len();
             for (idx, symbol) in arm.terms.iter().rev().enumerate() {
                 #[allow(non_snake_case)]
                 let vN = format_ident!("__v{}", idx);
                 let assign = quote! { let #vN = value_stack.pop().unwrap(); };
+                let pos = format_ident!("_{}", rhs_len - idx);
                 let symbol_quote = match symbol {
                     GrammarSymbol::Bound { name, mutable, sym } => {
                         // Capture-in-Bound (e.g. `n @ Tok(x)`): the outer name is
@@ -405,9 +407,15 @@ fn gen_reduce_function(
                                 _ => quote! { #vN },
                             };
                             if *mutable {
-                                quote! { let mut #name = #value_expr; }
+                                quote! {
+                                    let mut #pos = #value_expr;
+                                    let mut #name = #pos;
+                                }
                             } else {
-                                quote! { let #name = #value_expr; }
+                                quote! {
+                                    let #pos = #value_expr;
+                                    let #name = #pos;
+                                }
                             }
                         }
                     }
@@ -419,9 +427,56 @@ fn gen_reduce_function(
                             };
                         }
                     }
-                    _ => quote! {
-                        let _ = #vN;
-                    },
+                    GrammarSymbol::Rule(ident) => {
+                        let nonterm_idx = internal_grammar
+                            .nonterminals
+                            .iter()
+                            .position(|id| id == ident);
+                        let ret_type = nonterm_idx.map(|idx| {
+                            internal_grammar
+                                .ret_types
+                                .get(idx)
+                                .map(|o| o.clone())
+                                .flatten()
+                        }).flatten();
+                        match ret_type {
+                            Some(_) => {
+                                let variant_ident = format_ident!(
+                                    "N_{}",
+                                    ident.to_string().to_pascal_case()
+                                );
+                                quote! {
+                                    let #pos = match #vN {
+                                        __Value::#variant_ident(v) => v,
+                                        _ => unreachable!(),
+                                    };
+                                }
+                            }
+                            None => {
+                                quote! {
+                                    let _ = vN;
+                                }
+                            }
+                        }
+                    }
+                    GrammarSymbol::Token(_) => {
+                        quote! {
+                            let #pos = match #vN {
+                                __Value::T_Token(v) => v,
+                                _ => unreachable!(),
+                            };
+                        }
+                    }
+                    GrammarSymbol::App { name: app_name, args } => {
+                        let synthetic = app_ident(app_name, args);
+                        let variant_ident = format_ident!("N_{}", synthetic.to_string().to_pascal_case());
+                        quote! {
+                            let #pos = match #vN {
+                                __Value::#variant_ident(v) = v,
+                                _ => unreachable!(),
+                            };
+                        }
+                    }
                 };
                 arms_assigns.push(quote! {
                     #assign
@@ -569,6 +624,10 @@ fn gen_incremental_api(
         impl ParserState {
             pub fn current_state(&self) -> usize {
                 *self.state_stack.last().unwrap()
+            }
+
+            pub fn expected_terminals(&self) -> Vec<&'static str> {
+                __expected_tokens(self.current_state())
             }
         }
 

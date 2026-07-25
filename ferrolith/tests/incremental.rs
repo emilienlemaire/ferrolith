@@ -127,6 +127,29 @@ mod addition {
         // After shifting a token the state must have advanced
         assert_ne!(s.current_state(), initial);
     }
+
+    #[test]
+    fn expected_terminals_at_start() {
+        let s = match start() {
+            Checkpoint::InputNeeded(s) => s,
+            _ => panic!("expected InputNeeded"),
+        };
+        assert_eq!(s.expected_terminals(), vec!["Num"]);
+    }
+
+    #[test]
+    fn expected_terminals_after_expr() {
+        // Feed one number to reduce to `expr`; at that point both EOF and Plus are valid.
+        let s = match start() {
+            Checkpoint::InputNeeded(s) => s,
+            _ => panic!("expected InputNeeded"),
+        };
+        let s = match feed(s, Some(Tok::Num(1))) {
+            Checkpoint::InputNeeded(s) => s,
+            _ => panic!("expected InputNeeded after Num"),
+        };
+        assert_eq!(s.expected_terminals(), vec!["<eof>", "Plus"]);
+    }
 }
 
 mod speculative {
