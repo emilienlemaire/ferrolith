@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use ferrolith_core::grammar::{InternalGrammar, Production, Symbol};
 use proc_macro2::Span;
@@ -40,6 +40,8 @@ pub(super) fn internalize(grammar: &Grammar) -> syn::Result<(InternalGrammar, Ru
     }
 
     desargue_applications(&mut rule_set)?;
+
+    validate(&rule_set)?;
 
     for rule in rule_set.values() {
         if rule.parameters.len() == 0 {
@@ -323,7 +325,11 @@ fn replace_symbol(
     replacement: &GrammarSymbol,
 ) -> GrammarSymbol {
     match sym {
-        GrammarSymbol::Bound { name, mutable, sym: inner } => GrammarSymbol::Bound {
+        GrammarSymbol::Bound {
+            name,
+            mutable,
+            sym: inner,
+        } => GrammarSymbol::Bound {
             name: name.clone(),
             mutable: *mutable,
             sym: Box::new(replace_symbol(inner, param, replacement)),
@@ -369,6 +375,191 @@ fn symbol_str(sym: &GrammarSymbol) -> String {
             format!("{}__{}", name, args_str)
         }
     }
+}
+
+fn direct_rule_name_refs(symbol: &GrammarSymbol) -> Vec<&syn::Ident> {
+    match symbol {
+        GrammarSymbol::Rule(ident) => vec![ident],
+        GrammarSymbol::App { name, .. } => vec![name],
+        GrammarSymbol::Bound { sym, .. } => direct_rule_name_refs(sym),
+        _ => vec![],
+    }
+}
+
+fn nonterm_refs_in_symbol(symbol: &GrammarSymbol) -> Vec<syn::Ident> {
+    match symbol {
+        GrammarSymbol::Rule(ident) => vec![ident.clone()],
+        GrammarSymbol::App { name, args } => vec![app_ident(name, args)],
+        GrammarSymbol::Bound { sym, .. } => nonterm_refs_in_symbol(sym),
+        _ => vec![],
+    }
+}
+
+fn check_unreachable_rules(rules: &RuleSet, start: &syn::Ident) -> syn::Result<()> {
+    let mut reachable = HashSet::new();
+    let mut worklist = vec![start.clone()];
+
+    while !worklist.is_empty() {
+        let name = worklist.pop().unwrap();
+
+        if reachable.contains(&name) {
+            continue;
+        }
+
+        reachable.insert(name.clone());
+
+        if let Some(rule) = rules.get(&name) {
+            for arm in &rule.arms {
+                for symbol in &arm.terms {
+                    for ident in nonterm_refs_in_symbol(&symbol) {
+                        worklist.push(ident);
+                    }
+                }
+            }
+        }
+    }
+
+    let mut acc: Option<syn::Error> = None;
+
+    for rule in rules.values() {
+        if rule.parameters.is_empty() {
+            if !reachable.contains(&rule.name) {
+                let message = format!("rule `{}` is unreachable from the start rule", &rule.name);
+                let new_err = syn::Error::new_spanned(&rule.name, message);
+                if let Some(ref mut err) = acc {
+                    err.combine(new_err);
+                } else {
+                    acc = Some(new_err);
+                }
+            }
+        }
+    }
+
+    acc.map(Err).unwrap_or(Ok(()))
+}
+
+fn check_nonproductive_rules(rules: &RuleSet) -> syn::Result<()> {
+    let mut productive = HashSet::new();
+
+    loop {
+        let mut changed = false;
+
+        for rule in rules.values() {
+            if rule.parameters.is_empty() {
+                if productive.contains(&rule.name) {
+                    continue;
+                }
+
+                for arm in &rule.arms {
+                    let arm_is_productive = arm.terms.iter().all(|symbol| {
+                        nonterm_refs_in_symbol(symbol).iter().all(|i| productive.contains(i))
+                    });
+                    if arm_is_productive {
+                        productive.insert(rule.name.clone());
+                        changed = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if !changed {
+            break;
+        }
+    }
+
+    let mut acc: Option<syn::Error> = None;
+
+    for rule in rules.values() {
+        if rule.parameters.is_empty() {
+            if !productive.contains(&rule.name) {
+                let message = format!("rule `{}` can never produce a value", &rule.name);
+                let new_err = syn::Error::new_spanned(&rule.name, message);
+                if let Some(ref mut err) = acc {
+                    err.combine(new_err);
+                } else {
+                    acc = Some(new_err);
+                }
+            }
+        }
+    }
+
+    acc.map(Err).unwrap_or(Ok(()))
+}
+
+fn check_undefined_references(rules: &RuleSet) -> syn::Result<()> {
+    let mut acc: Option<syn::Error> = None;
+
+    for rule in rules.values() {
+        if !rule.parameters.is_empty() {
+            continue;
+        }
+
+        for arm in &rule.arms {
+            for symbol in &arm.terms {
+                for ident in direct_rule_name_refs(&symbol) {
+                    if !rules.contains_key(ident) {
+                        let message = format!("undefined rule `{ident}`");
+                        let new_err = syn::Error::new_spanned(&ident, message);
+                        if let Some(ref mut err) = acc {
+                            err.combine(new_err);
+                        } else {
+                            acc = Some(new_err);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    acc.map(Err).unwrap_or(Ok(()))
+}
+
+fn validate(rules: &RuleSet) -> syn::Result<()> {
+    let starts: Vec<_> = rules
+        .values()
+        .filter(|r| r.attrs.iter().any(|attr| attr.path().is_ident("start")))
+        .collect();
+    let start = if starts.len() == 1 { Some(&starts[0].name) } else { None };
+
+    let mut acc: Option<syn::Error> = None;
+
+    match check_undefined_references(rules) {
+        Ok(()) => (),
+        Err(e) => {
+            if let Some(ref mut err) = acc {
+                err.combine(e);
+            } else {
+                acc = Some(e);
+            }
+        }
+    };
+
+    match check_nonproductive_rules(rules) {
+        Ok(()) => (),
+        Err(e) => {
+            if let Some(ref mut err) = acc {
+                err.combine(e);
+            } else {
+                acc = Some(e);
+            }
+        }
+    };
+
+    if let Some(start) = start {
+        match check_unreachable_rules(rules, &start) {
+            Ok(()) => (),
+            Err(e) => {
+                if let Some(ref mut err) = acc {
+                    err.combine(e);
+                } else {
+                    acc = Some(e);
+                }
+            }
+        }
+    }
+
+    acc.map(Err).unwrap_or(Ok(()))
 }
 
 impl VisitMut for TypeSubst<'_> {

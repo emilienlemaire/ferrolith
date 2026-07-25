@@ -1,0 +1,5 @@
+error: rule `cycle` can never produce a value
+  --> tests/macro/fail/nonproductive_rule.rs:16:8
+   |
+16 |     fn cycle() -> i64 {
+   |        ^^^^^

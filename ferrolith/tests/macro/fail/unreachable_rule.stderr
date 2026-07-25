@@ -1,0 +1,5 @@
+error: rule `unused` is unreachable from the start rule
+  --> tests/macro/fail/unreachable_rule.rs:15:8
+   |
+15 |     fn unused() -> i64 {
+   |        ^^^^^^

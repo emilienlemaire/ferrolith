@@ -1,0 +1,5 @@
+error: undefined rule `nonexistent`
+  --> tests/macro/fail/undefined_rule_ref.rs:13:14
+   |
+13 |         (v @ nonexistent) => v,
+   |              ^^^^^^^^^^^
