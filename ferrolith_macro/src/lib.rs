@@ -454,7 +454,7 @@ fn gen_reduce_function(
                             }
                             None => {
                                 quote! {
-                                    let _ = vN;
+                                    let _ = #vN;
                                 }
                             }
                         }
@@ -472,7 +472,7 @@ fn gen_reduce_function(
                         let variant_ident = format_ident!("N_{}", synthetic.to_string().to_pascal_case());
                         quote! {
                             let #pos = match #vN {
-                                __Value::#variant_ident(v) = v,
+                                __Value::#variant_ident(v) => v,
                                 _ => unreachable!(),
                             };
                         }

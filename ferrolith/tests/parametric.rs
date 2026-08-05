@@ -1,7 +1,7 @@
 // Tests for parametric (higher-order) rules desugared via desargue_applications.
 
 mod star {
-    // star(x) → ε | star(x) x  — zero-or-more of a nonterminal
+    // Uses the built-in star combinator — no local definition needed.
     use ferrolith::grammar;
 
     enum Tok {
@@ -10,11 +10,6 @@ mod star {
 
     grammar! {
         type Token = Tok;
-
-        fn star(x) -> Vec<x> {
-            ()                     => vec![],
-            (mut xs @ star(x), v @ x) => { xs.push(v); xs },
-        }
 
         #[start]
         fn nums() -> Vec<i64> {

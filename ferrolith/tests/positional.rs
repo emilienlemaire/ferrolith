@@ -60,6 +60,42 @@ mod mixed_named_positional {
     }
 }
 
+mod unbound_app_positional {
+    use ferrolith::grammar;
+
+    enum Tok {
+        Num(i64),
+    }
+
+    grammar! {
+        type Token = Tok;
+
+        #[start]
+        fn nums() -> Vec<i64> {
+            // star(num) is an App symbol without a binding — exercises the
+            // App branch in gen_reduce_function via the positional _1.
+            (star(num)) => _1,
+        }
+
+        fn num() -> i64 {
+            (Num(n)) => n,
+        }
+    }
+
+    #[test]
+    fn empty_star_is_empty_vec() {
+        assert_eq!(parse(std::iter::empty()).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn star_collects_items_in_order() {
+        assert_eq!(
+            parse([Tok::Num(1), Tok::Num(2), Tok::Num(3)].into_iter()).unwrap(),
+            vec![1, 2, 3],
+        );
+    }
+}
+
 mod bound_copy_positional {
     use ferrolith::grammar;
 

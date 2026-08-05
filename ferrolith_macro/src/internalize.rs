@@ -12,6 +12,55 @@ use crate::{
 
 struct TypeSubst<'a>(&'a [(syn::Ident, syn::Type)]);
 
+const BUILTIN_SOURCES: [(&str, &str); 5] = [
+    (
+        "star",
+        "
+     fn star(x) -> Vec<x> {
+        () => vec![],
+        (mut xs @ star(x), v @ x) => { xs.push(v); xs },
+     }
+     ",
+    ),
+    (
+        "plus",
+        "
+        fn plus(x) -> Vec<x> {
+            (v @ x) => vec![v],
+            (mut xs @ plus(x), v @ x) => { xs.push(v); xs },
+        }
+     ",
+    ),
+    (
+        "opt",
+        "
+        fn opt(x) -> Option<x> {
+            () => None,
+            (v @ x) => Some(v),
+        }
+      ",
+    ),
+    (
+        "sep",
+        "
+     fn sep(s, x) -> Vec<x> {
+        (v @ x) => vec![v],
+        (mut xs @ sep(s, x), s, v @ x) => { xs.push(v); xs },
+     }
+     ",
+    ),
+    (
+        "sep_opt",
+        "
+      fn sep_opt(s, x) -> Vec<x> {
+        () => vec![],
+        (v @ x) => vec![v],
+        (mut xs @ sep_opt(s, x), s, v @ x) => { xs.push(v); xs },
+      }
+      ",
+    ),
+];
+
 pub(super) type RuleSet = HashMap<syn::Ident, Rule>;
 
 pub(super) fn internalize(grammar: &Grammar) -> syn::Result<(InternalGrammar, RuleSet)> {
@@ -39,6 +88,7 @@ pub(super) fn internalize(grammar: &Grammar) -> syn::Result<(InternalGrammar, Ru
         }
     }
 
+    inject_builtins(&mut rule_set)?;
     desargue_applications(&mut rule_set)?;
 
     validate(&rule_set)?;
@@ -247,6 +297,14 @@ fn desargue_applications(rules: &mut RuleSet) -> syn::Result<()> {
     Ok(())
 }
 
+fn inject_builtins(rules: &mut RuleSet) -> syn::Result<()> {
+    for (name, src) in BUILTIN_SOURCES {
+        let rule = syn::parse_str::<Rule>(src)?;
+        rules.entry(format_ident!("{}", name)).or_insert(rule);
+    }
+    Ok(())
+}
+
 fn desargue_symbol(rules: &mut RuleSet, symbol: &GrammarSymbol) -> syn::Result<()> {
     match symbol {
         GrammarSymbol::Bound { sym, .. } => desargue_symbol(rules, sym),
@@ -452,7 +510,9 @@ fn check_nonproductive_rules(rules: &RuleSet) -> syn::Result<()> {
 
                 for arm in &rule.arms {
                     let arm_is_productive = arm.terms.iter().all(|symbol| {
-                        nonterm_refs_in_symbol(symbol).iter().all(|i| productive.contains(i))
+                        nonterm_refs_in_symbol(symbol)
+                            .iter()
+                            .all(|i| productive.contains(i))
                     });
                     if arm_is_productive {
                         productive.insert(rule.name.clone());
@@ -520,7 +580,11 @@ fn validate(rules: &RuleSet) -> syn::Result<()> {
         .values()
         .filter(|r| r.attrs.iter().any(|attr| attr.path().is_ident("start")))
         .collect();
-    let start = if starts.len() == 1 { Some(&starts[0].name) } else { None };
+    let start = if starts.len() == 1 {
+        Some(&starts[0].name)
+    } else {
+        None
+    };
 
     let mut acc: Option<syn::Error> = None;
 

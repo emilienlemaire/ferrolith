@@ -25,6 +25,40 @@ mod single_value {
     }
 }
 
+mod unit_rule_without_binding {
+    use ferrolith::grammar;
+
+    enum Tok {
+        Num(i64),
+        Semi,
+    }
+
+    grammar! {
+        type Token = Tok;
+
+        #[start]
+        fn stmt() -> i64 {
+            // sep has no return type and no binding — exercises the None branch
+            // in the Rule arm of gen_reduce_function (let _ = #vN).
+            (Num(n), sep) => n,
+        }
+
+        fn sep() {
+            (Semi) => (),
+        }
+    }
+
+    #[test]
+    fn parses_number_followed_by_semi() {
+        assert_eq!(parse([Tok::Num(42), Tok::Semi].into_iter()).unwrap(), 42);
+    }
+
+    #[test]
+    fn rejects_missing_semi() {
+        assert!(parse([Tok::Num(1)].into_iter()).is_err());
+    }
+}
+
 mod addition {
     use ferrolith::grammar;
 
