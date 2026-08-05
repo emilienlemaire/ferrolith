@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, usize};
 
 use ferrolith_core::{
     automaton,
@@ -11,8 +11,11 @@ use proc_macro::TokenStream;
 use quote::{format_ident, quote, quote_spanned};
 use syn::parse_macro_input;
 
-use crate::{grammar::{Grammar, GrammarSymbol, Rule}, internalize::app_ident};
 use crate::internalize::RuleSet;
+use crate::{
+    grammar::{Grammar, GrammarSymbol, Rule},
+    internalize::app_ident,
+};
 
 mod grammar;
 mod internalize;
@@ -21,7 +24,7 @@ mod internalize;
 pub fn grammar(input: TokenStream) -> TokenStream {
     let grammar = parse_macro_input!(input as Grammar);
 
-    let (internal_grammar, rule_set) = match internalize::internalize(&grammar) {
+    let (internal_grammar, rule_set, error_id) = match internalize::internalize(&grammar) {
         Ok(r) => r,
         Err(e) => return e.to_compile_error().into(),
     };
@@ -50,17 +53,19 @@ pub fn grammar(input: TokenStream) -> TokenStream {
 
     let value_enum = gen_value_enum(&grammar, &internal_grammar);
 
-    let token_enum = gen_token_enum(&grammar, &internal_grammar);
+    let token_enum = gen_token_enum(&grammar, &internal_grammar, error_id);
 
-    let expected_fn = gen_expected_tokens_fn(&internal_grammar);
+    let expected_fn = gen_expected_tokens_fn(&internal_grammar, error_id);
 
     let actions_fn = gen_action_function(&actions, n_states, n_terminals);
+
+    let default_reductions_fn = gen_default_reductions_fn(&actions, n_states, n_terminals);
 
     let gotos_fn = gen_goto_function(&gotos, n_states, n_nonterminals);
 
     let reduce_fn = gen_reduce_function(&grammar, &internal_grammar, &rule_set);
 
-    let parse_fn = gen_parse_function(&grammar, &internal_grammar);
+    let parse_fn = gen_parse_function(&grammar, &internal_grammar, error_id);
 
     let incremental_api = gen_incremental_api(&grammar, &internal_grammar);
 
@@ -80,6 +85,8 @@ pub fn grammar(input: TokenStream) -> TokenStream {
 
         #actions_fn
 
+        #default_reductions_fn
+
         #gotos_fn
 
         #reduce_fn
@@ -93,7 +100,10 @@ pub fn grammar(input: TokenStream) -> TokenStream {
     .into()
 }
 
-fn gen_expected_tokens_fn(internal_grammar: &InternalGrammar) -> proc_macro2::TokenStream {
+fn gen_expected_tokens_fn(
+    internal_grammar: &InternalGrammar,
+    error_terminal_id: Option<usize>,
+) -> proc_macro2::TokenStream {
     let len = internal_grammar.terminals.len();
     let names: Vec<String> = internal_grammar
         .terminals
@@ -108,18 +118,37 @@ fn gen_expected_tokens_fn(internal_grammar: &InternalGrammar) -> proc_macro2::To
         })
         .collect();
 
-    quote! {
-        static __TERMINAL_NAMES: [&str; #len] = [#(#names,)*];
+    if let Some(err_id) = error_terminal_id {
+        quote! {
+            static __TERMINAL_NAMES: [&str; #len] = [#(#names,)*];
 
-        fn __expected_tokens(state: usize) -> Vec<&'static str> {
-            let mut expected = vec![];
-            for t in 0..#len {
-                if __action(state, t) != ::ferrolith::action::Action::Error {
-                    expected.push(__TERMINAL_NAMES[t]);
+            fn __expected_tokens(state: usize) -> Vec<&'static str> {
+                let mut expected = vec![];
+                for t in 0..#len {
+                    if t == #err_id {
+                        continue;
+                    } else if __action(state, t) != ::ferrolith::action::Action::Error {
+                        expected.push(__TERMINAL_NAMES[t]);
+                    }
                 }
-            }
 
-            expected
+                expected
+            }
+        }
+    } else {
+        quote! {
+            static __TERMINAL_NAMES: [&str; #len] = [#(#names,)*];
+
+            fn __expected_tokens(state: usize) -> Vec<&'static str> {
+                let mut expected = vec![];
+                for t in 0..#len {
+                    if __action(state, t) != ::ferrolith::action::Action::Error {
+                        expected.push(__TERMINAL_NAMES[t]);
+                    }
+                }
+
+                expected
+            }
         }
     }
 }
@@ -199,8 +228,6 @@ fn collect_symbol(symbol: &GrammarSymbol, captures: &mut HashSet<syn::Ident>) {
         GrammarSymbol::Bound { sym, .. } => {
             collect_symbol(sym, captures);
         }
-        GrammarSymbol::Rule(_) => (),
-        GrammarSymbol::Token(_) => (),
         GrammarSymbol::Capture { variant, .. } => {
             captures.insert(variant.clone());
         }
@@ -209,6 +236,7 @@ fn collect_symbol(symbol: &GrammarSymbol, captures: &mut HashSet<syn::Ident>) {
                 collect_symbol(arg, captures);
             }
         }
+        _ => ()
     }
 }
 
@@ -229,6 +257,7 @@ fn collect_capture_terminals(grammar: &Grammar) -> HashSet<syn::Ident> {
 fn gen_token_enum(
     grammar: &Grammar,
     internal_grammar: &InternalGrammar,
+    error_terminal_id: Option<usize>,
 ) -> proc_macro2::TokenStream {
     let token_type = grammar.tokens_type.ty.as_ref();
 
@@ -239,6 +268,7 @@ fn gen_token_enum(
         .iter()
         .enumerate()
         .skip(1)
+        .filter(|(id, _)| Some(*id) != error_terminal_id)
         .map(|(id, ident)| {
             if captures.contains(ident) {
                 quote! { #token_type::#ident(..) => #id, }
@@ -302,6 +332,40 @@ fn gen_action_function(
         fn __action(state: usize, terminal: usize) -> ::ferrolith::action::Action {
             __ACTION_TABLE[state * __N_TERMINALS + terminal]
         }
+    }
+}
+
+fn gen_default_reductions_fn(
+    actions: &Actions,
+    n_states: usize,
+    n_terminals: usize,
+) -> proc_macro2::TokenStream {
+    let defaults: Vec<_> = (0..n_states)
+        .map(|state| {
+            let mut default_prod: Option<usize> = None;
+            let mut has_non_reduce = false;
+            for t in 0..n_terminals {
+                match actions.get(&(state, t)) {
+                    Some(Action::Reduce(p)) => {
+                        match default_prod {
+                            None => default_prod = Some(*p),
+                            Some(q) if q == *p => {}
+                            _ => { has_non_reduce = true; break; }
+                        }
+                    }
+                    Some(Action::Shift(_)) | Some(Action::Accept) => {
+                        has_non_reduce = true;
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            if has_non_reduce { usize::MAX } else { default_prod.unwrap_or(usize::MAX) }
+        })
+        .collect();
+
+    quote! {
+        static __DEFAULT_REDUCTIONS: [usize; #n_states] = [#(#defaults,)*];
     }
 }
 
@@ -432,19 +496,19 @@ fn gen_reduce_function(
                             .nonterminals
                             .iter()
                             .position(|id| id == ident);
-                        let ret_type = nonterm_idx.map(|idx| {
-                            internal_grammar
-                                .ret_types
-                                .get(idx)
-                                .map(|o| o.clone())
-                                .flatten()
-                        }).flatten();
+                        let ret_type = nonterm_idx
+                            .map(|idx| {
+                                internal_grammar
+                                    .ret_types
+                                    .get(idx)
+                                    .map(|o| o.clone())
+                                    .flatten()
+                            })
+                            .flatten();
                         match ret_type {
                             Some(_) => {
-                                let variant_ident = format_ident!(
-                                    "N_{}",
-                                    ident.to_string().to_pascal_case()
-                                );
+                                let variant_ident =
+                                    format_ident!("N_{}", ident.to_string().to_pascal_case());
                                 quote! {
                                     let #pos = match #vN {
                                         __Value::#variant_ident(v) => v,
@@ -467,14 +531,23 @@ fn gen_reduce_function(
                             };
                         }
                     }
-                    GrammarSymbol::App { name: app_name, args } => {
+                    GrammarSymbol::App {
+                        name: app_name,
+                        args,
+                    } => {
                         let synthetic = app_ident(app_name, args);
-                        let variant_ident = format_ident!("N_{}", synthetic.to_string().to_pascal_case());
+                        let variant_ident =
+                            format_ident!("N_{}", synthetic.to_string().to_pascal_case());
                         quote! {
                             let #pos = match #vN {
                                 __Value::#variant_ident(v) => v,
                                 _ => unreachable!(),
                             };
+                        }
+                    }
+                    GrammarSymbol::ErrorToken => {
+                        quote! {
+                            let _ = #vN;
                         }
                     }
                 };
@@ -522,6 +595,7 @@ fn gen_reduce_function(
 fn gen_parse_function(
     grammar: &Grammar,
     internal_grammar: &InternalGrammar,
+    error_terminal_id: Option<usize>,
 ) -> proc_macro2::TokenStream {
     let start_nt_id = match internal_grammar.productions[0].rhs[0] {
         Symbol::NonTerminal(id) => id,
@@ -541,6 +615,81 @@ fn gen_parse_function(
     );
 
     let token_type = grammar.tokens_type.ty.as_ref();
+
+    let err_handling = if let Some(err_id) = error_terminal_id {
+        quote! {
+            let error_expected = __expected_tokens(state);
+
+            let mut pop_count = 0;
+            let recovery_state = state_stack.iter().rev().cloned().find(|state|
+                if let ::ferrolith::action::Action::Shift(_) = __action(*state, #err_id) {
+                    true
+                } else {
+                    pop_count += 1;
+                    false
+                }
+            );
+
+            if let Some(candidate) = recovery_state {
+                let new_len = state_stack.len() - pop_count;
+                let shift_target = match __action(candidate, #err_id) {
+                    ::ferrolith::action::Action::Shift(s) => s,
+                    _ => unreachable!(),
+                };
+
+                state_stack.truncate(new_len);
+                value_stack.truncate(new_len.saturating_sub(1));
+
+                state_stack.push(shift_target);
+                value_stack.push(__Value::T_Unit);
+
+                while
+                    let ::ferrolith::action::Action::Error = __action(shift_target, terminal_id)
+                    && terminal_id != 0 {
+                        token = tokens.next();
+                        terminal_id = __token_id_opt(token.as_ref());
+                }
+
+                if let ::ferrolith::action::Action::Error = __action(shift_target, terminal_id) {
+                    return Err(match token {
+                        Some(t) => ::ferrolith::ParseError::UnexpectedToken {
+                            token: t,
+                            expected: error_expected,
+                        },
+                        None => ::ferrolith::ParseError::UnexpectedEof {
+                            expected: error_expected,
+                        },
+                    });
+                }
+
+                continue;
+
+            } else {
+                return Err(match token {
+                    Some(t) => ::ferrolith::ParseError::UnexpectedToken {
+                        token: t,
+                        expected: error_expected,
+                    },
+                    None => ::ferrolith::ParseError::UnexpectedEof {
+                        expected: error_expected,
+                    },
+                });
+            }
+
+        }
+    } else {
+        quote! {
+            return Err(match token {
+                Some(t) => ::ferrolith::ParseError::UnexpectedToken {
+                    token: t,
+                    expected: __expected_tokens(state)
+                },
+                None => ::ferrolith::ParseError::UnexpectedEof {
+                    expected: __expected_tokens(state)
+                },
+            });
+        }
+    };
 
     quote! {
         pub fn parse(
@@ -577,15 +726,17 @@ fn gen_parse_function(
                         });
                     }
                     ::ferrolith::action::Action::Error => {
-                        return Err(match token {
-                            Some(t) => ::ferrolith::ParseError::UnexpectedToken {
-                                token: t,
-                                expected: __expected_tokens(state)
-                            },
-                            None => ::ferrolith::ParseError::UnexpectedEof {
-                                expected: __expected_tokens(state)
-                            },
-                        });
+                        let default_prod = __DEFAULT_REDUCTIONS[state];
+                        if default_prod != usize::MAX {
+                            let (lhs, rhs_len) = __prod_info(default_prod);
+                            let result = __reduce(default_prod, &mut value_stack);
+                            state_stack.truncate(state_stack.len() - rhs_len);
+                            let next = __goto(*state_stack.last().unwrap(), lhs);
+                            state_stack.push(next);
+                            value_stack.push(result);
+                        } else {
+                            #err_handling
+                        }
                     }
                 }
             }

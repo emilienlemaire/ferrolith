@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use ferrolith_core::grammar::{Assoc, PrecLevel, Production, Symbol, TerminalId};
+use quote::format_ident;
 use syn::{Token, parse::Parse};
 
 use crate::internalize::app_ident;
@@ -22,6 +23,7 @@ pub(super) enum GrammarSymbol {
         name: syn::Ident,
         args: Vec<GrammarSymbol>,
     },
+    ErrorToken,
 }
 
 #[derive(Clone)]
@@ -276,6 +278,8 @@ impl syn::parse::Parse for GrammarSymbol {
 
         if ident.to_string().starts_with(|c: char| c.is_uppercase()) {
             Ok(GrammarSymbol::Token(ident))
+        } else if ident.to_string() == "error" {
+            Ok(GrammarSymbol::ErrorToken)
         } else {
             Ok(GrammarSymbol::Rule(ident))
         }
@@ -469,6 +473,16 @@ impl Arm {
                         syn::Error::new(name.span(), format!("Unexpanded application `{name}`"))
                     })?;
                     Ok(Symbol::NonTerminal(*id))
+                }
+                GrammarSymbol::ErrorToken => {
+                    let ident = format_ident!("__error__");
+                    let id = terminals.get(&ident).ok_or_else(|| {
+                        syn::Error::new(
+                            ident.span(),
+                            format!("Unable to find the `__error__` symbol"),
+                        )
+                    })?;
+                    Ok(Symbol::Terminal(*id))
                 }
             }
         }

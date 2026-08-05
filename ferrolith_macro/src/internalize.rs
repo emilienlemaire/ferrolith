@@ -63,7 +63,7 @@ const BUILTIN_SOURCES: [(&str, &str); 5] = [
 
 pub(super) type RuleSet = HashMap<syn::Ident, Rule>;
 
-pub(super) fn internalize(grammar: &Grammar) -> syn::Result<(InternalGrammar, RuleSet)> {
+pub(super) fn internalize(grammar: &Grammar) -> syn::Result<(InternalGrammar, RuleSet, Option<usize>)> {
     let mut terminals = HashMap::new();
     let mut nonterminals = HashMap::new();
     let mut rule_set = RuleSet::new();
@@ -87,6 +87,8 @@ pub(super) fn internalize(grammar: &Grammar) -> syn::Result<(InternalGrammar, Ru
             }
         }
     }
+
+    let error_terminal_id = terminals.get(&format_ident!("__error__")).map(|id| *id);
 
     inject_builtins(&mut rule_set)?;
     desargue_applications(&mut rule_set)?;
@@ -257,6 +259,7 @@ pub(super) fn internalize(grammar: &Grammar) -> syn::Result<(InternalGrammar, Ru
             actions_order,
         },
         rule_set,
+        error_terminal_id,
     ))
 }
 
@@ -271,6 +274,9 @@ fn get_symbol_terminal(symbol: &GrammarSymbol) -> Vec<syn::Ident> {
             for arg in args {
                 terms.extend(get_symbol_terminal(arg));
             }
+        }
+        GrammarSymbol::ErrorToken => {
+            terms.push(format_ident!("__error__"));
         }
     };
     terms
@@ -431,6 +437,9 @@ fn symbol_str(sym: &GrammarSymbol) -> String {
         GrammarSymbol::App { name, args } => {
             let args_str = args.iter().map(symbol_str).collect::<Vec<_>>().join("_");
             format!("{}__{}", name, args_str)
+        }
+        GrammarSymbol::ErrorToken => {
+            String::from("__error_")
         }
     }
 }
