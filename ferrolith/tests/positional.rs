@@ -20,7 +20,10 @@ mod basic {
 
     #[test]
     fn positional_addition() {
-        assert_eq!(parse([Tok::Num(3), Tok::Plus, Tok::Num(4)].into_iter()).unwrap(), 7);
+        assert_eq!(
+            parse([Tok::Num(3), Tok::Plus, Tok::Num(4)].into_iter()).unwrap(),
+            7
+        );
     }
 
     #[test]
@@ -56,7 +59,10 @@ mod mixed_named_positional {
 
     #[test]
     fn named_first_positional_third() {
-        assert_eq!(parse([Tok::Num(10), Tok::Plus, Tok::Num(5)].into_iter()).unwrap(), 15);
+        assert_eq!(
+            parse([Tok::Num(10), Tok::Plus, Tok::Num(5)].into_iter()).unwrap(),
+            15
+        );
     }
 }
 
@@ -120,6 +126,9 @@ mod bound_copy_positional {
     fn positional_for_bound_copy_type() {
         // _1 refers to `l @ expr` at position 1; i64 is Copy so _1 is still
         // available after `let l = _1` copies rather than moves it.
-        assert_eq!(parse([Tok::Num(4), Tok::Plus, Tok::Num(6)].into_iter()).unwrap(), 10);
+        assert_eq!(
+            parse([Tok::Num(4), Tok::Plus, Tok::Num(6)].into_iter()).unwrap(),
+            10
+        );
     }
 }

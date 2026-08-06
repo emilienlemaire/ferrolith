@@ -76,7 +76,14 @@ mod separated {
     fn multiple_elements() {
         assert_eq!(
             parse(
-                [Tok::Num(1), Tok::Comma, Tok::Num(2), Tok::Comma, Tok::Num(3)].into_iter()
+                [
+                    Tok::Num(1),
+                    Tok::Comma,
+                    Tok::Num(2),
+                    Tok::Comma,
+                    Tok::Num(3)
+                ]
+                .into_iter()
             )
             .unwrap(),
             vec![1, 2, 3]
@@ -149,9 +156,6 @@ mod multiple_instantiations {
     #[test]
     fn single_elements() {
         let tokens = [Tok::Int(42), Tok::Semi, Tok::Bool(true)];
-        assert_eq!(
-            parse(tokens.into_iter()).unwrap(),
-            (vec![42], vec![true])
-        );
+        assert_eq!(parse(tokens.into_iter()).unwrap(), (vec![42], vec![true]));
     }
 }

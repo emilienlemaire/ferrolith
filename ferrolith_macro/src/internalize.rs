@@ -63,7 +63,9 @@ const BUILTIN_SOURCES: [(&str, &str); 5] = [
 
 pub(super) type RuleSet = HashMap<syn::Ident, Rule>;
 
-pub(super) fn internalize(grammar: &Grammar) -> syn::Result<(InternalGrammar, RuleSet, Option<usize>)> {
+pub(super) fn internalize(
+    grammar: &Grammar,
+) -> syn::Result<(InternalGrammar, RuleSet, Option<usize>)> {
     let mut terminals = HashMap::new();
     let mut nonterminals = HashMap::new();
     let mut rule_set = RuleSet::new();
@@ -438,9 +440,7 @@ fn symbol_str(sym: &GrammarSymbol) -> String {
             let args_str = args.iter().map(symbol_str).collect::<Vec<_>>().join("_");
             format!("{}__{}", name, args_str)
         }
-        GrammarSymbol::ErrorToken => {
-            String::from("__error_")
-        }
+        GrammarSymbol::ErrorToken => String::from("__error_"),
     }
 }
 

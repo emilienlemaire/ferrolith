@@ -153,7 +153,14 @@ mod sep {
     fn multiple_elements() {
         assert_eq!(
             parse(
-                [Tok::Num(1), Tok::Comma, Tok::Num(2), Tok::Comma, Tok::Num(3)].into_iter()
+                [
+                    Tok::Num(1),
+                    Tok::Comma,
+                    Tok::Num(2),
+                    Tok::Comma,
+                    Tok::Num(3)
+                ]
+                .into_iter()
             )
             .unwrap(),
             vec![1, 2, 3]
@@ -201,7 +208,14 @@ mod sep_opt {
     fn multiple_elements() {
         assert_eq!(
             parse(
-                [Tok::Num(1), Tok::Comma, Tok::Num(2), Tok::Comma, Tok::Num(3)].into_iter()
+                [
+                    Tok::Num(1),
+                    Tok::Comma,
+                    Tok::Num(2),
+                    Tok::Comma,
+                    Tok::Num(3)
+                ]
+                .into_iter()
             )
             .unwrap(),
             vec![1, 2, 3]

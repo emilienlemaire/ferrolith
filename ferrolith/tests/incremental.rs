@@ -183,13 +183,19 @@ mod speculative {
         for tok in [Tok::Num(1), Tok::Plus, Tok::Num(2)] {
             cp = match cp {
                 Checkpoint::InputNeeded(s) => feed(s, Some(tok)),
-                other => panic!("unexpected checkpoint: {:?}", std::mem::discriminant(&other)),
+                other => panic!(
+                    "unexpected checkpoint: {:?}",
+                    std::mem::discriminant(&other)
+                ),
             };
         }
 
         let s = match cp {
             Checkpoint::InputNeeded(s) => s,
-            other => panic!("unexpected checkpoint: {:?}", std::mem::discriminant(&other)),
+            other => panic!(
+                "unexpected checkpoint: {:?}",
+                std::mem::discriminant(&other)
+            ),
         };
 
         let s_clone = s.clone();

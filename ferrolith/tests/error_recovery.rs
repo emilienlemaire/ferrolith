@@ -61,8 +61,15 @@ mod stmt_recovery {
     fn recovery_in_middle_of_list() {
         assert_eq!(
             parse(
-                [Tok::Num(1), Tok::Semi, Tok::Plus, Tok::Semi, Tok::Num(3), Tok::Semi]
-                    .into_iter()
+                [
+                    Tok::Num(1),
+                    Tok::Semi,
+                    Tok::Plus,
+                    Tok::Semi,
+                    Tok::Num(3),
+                    Tok::Semi
+                ]
+                .into_iter()
             )
             .unwrap(),
             vec![Some(1), None, Some(3)]
@@ -107,10 +114,7 @@ mod stmt_recovery {
     #[test]
     fn error_after_partial_expr_then_valid_stmt() {
         assert_eq!(
-            parse(
-                [Tok::Num(1), Tok::Plus, Tok::Semi, Tok::Num(5), Tok::Semi].into_iter()
-            )
-            .unwrap(),
+            parse([Tok::Num(1), Tok::Plus, Tok::Semi, Tok::Num(5), Tok::Semi].into_iter()).unwrap(),
             vec![None, Some(5)]
         );
     }

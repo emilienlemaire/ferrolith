@@ -57,9 +57,10 @@ pub fn grammar(input: TokenStream) -> TokenStream {
 
     let expected_fn = gen_expected_tokens_fn(&internal_grammar, error_id);
 
-    let actions_fn = gen_action_function(&actions, n_states, n_terminals);
+    let (default_reductions_fn, defaults) =
+        gen_default_reductions_fn(&actions, n_states, n_terminals);
 
-    let default_reductions_fn = gen_default_reductions_fn(&actions, n_states, n_terminals);
+    let actions_fn = gen_action_function(&actions, n_states, n_terminals, &defaults);
 
     let gotos_fn = gen_goto_function(&gotos, n_states, n_nonterminals);
 
@@ -236,7 +237,7 @@ fn collect_symbol(symbol: &GrammarSymbol, captures: &mut HashSet<syn::Ident>) {
                 collect_symbol(arg, captures);
             }
         }
-        _ => ()
+        _ => (),
     }
 }
 
@@ -312,25 +313,116 @@ fn gen_action_function(
     actions: &Actions,
     n_states: usize,
     n_terminals: usize,
+    defaults: &[usize],
 ) -> proc_macro2::TokenStream {
-    let table_size = n_states * n_terminals;
-    let mut table = vec![quote!(::ferrolith::action::Action::Error); table_size];
-    for ((state_id, terminal_id), action) in actions {
-        let entry = match action {
-            Action::Error => quote!(::ferrolith::action::Action::Error),
-            Action::Accept => quote!(::ferrolith::action::Action::Accept),
-            Action::Shift(n) => quote!(::ferrolith::action::Action::Shift(#n)),
-            Action::Reduce(n) => quote!(::ferrolith::action::Action::Reduce(#n)),
-        };
-        table[state_id * n_terminals + terminal_id] = entry;
+    fn action_to_tokens(action: Action) -> proc_macro2::TokenStream {
+        match action {
+            Action::Shift(n) => quote! { ::ferrolith::action::Action::Shift(#n) },
+            Action::Reduce(n) => quote! { ::ferrolith::action::Action::Reduce(#n) },
+            Action::Accept => quote! { ::ferrolith::action::Action::Accept },
+            Action::Error => quote! { ::ferrolith::action::Action::Error },
+        }
     }
 
+    let mut rows = vec![];
+
+    for state in 0..n_states {
+        let default_prod = defaults[state];
+        rows.push((state, vec![None; n_terminals]));
+        for ((state_id, terminal), action) in actions {
+            if *state_id != state || *action == Action::Error {
+                continue;
+            }
+
+            if let Action::Reduce(prod) = action
+                && *prod == default_prod
+            {
+                continue;
+            }
+
+            rows[state].1[*terminal] = Some(action.clone());
+        }
+    }
+
+    let mut packed = vec![];
+    let mut check: Vec<usize> = vec![];
+    let mut disp = vec![0isize; n_states];
+
+    rows.sort_by(|l, r| {
+        r.1.iter()
+            .filter(|r| r.is_some())
+            .count()
+            .cmp(&l.1.iter().filter(|l| l.is_some()).count())
+    });
+
+    for (state, row) in rows {
+        if row.iter().all(Option::is_none) {
+            disp[state] = 0;
+            continue;
+        }
+
+        let terminals: Vec<_> = row
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, action)| {
+                if let Some(action) = action {
+                    Some((idx, action))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let min_t = terminals[0].0 as isize;
+
+        let mut d = -min_t;
+        loop {
+            let mut fit = true;
+            for (terminal, _) in &terminals {
+                if (d + *terminal as isize) as usize >= check.len()
+                    || check[(d + *terminal as isize) as usize] == usize::MAX
+                {
+                    continue;
+                }
+                fit = false;
+                break;
+            }
+            if fit {
+                break;
+            }
+            d += 1;
+        }
+
+        disp[state] = d;
+
+        for (terminal, action) in terminals {
+            let slot = (d + terminal as isize) as usize;
+            if slot >= packed.len() {
+                while slot + 1 >= packed.len() {
+                    packed.push(action_to_tokens(Action::Error));
+                    check.push(usize::MAX);
+                }
+            }
+            packed[slot] = action_to_tokens(action.clone());
+            check[slot] = state;
+        }
+    }
+
+    let pack_len = packed.len();
+
     quote! {
-        const __N_TERMINALS: usize = #n_terminals;
-        static __ACTION_TABLE: [::ferrolith::action::Action; #table_size] = [#(#table,)*];
+        static __ACTION_DISP: [isize; #n_states] = [ #(#disp),* ];
+        static __ACTION_PACKED: [::ferrolith::action::Action; #pack_len] = [ #(#packed),* ];
+        static __ACTION_CHECK: [usize; #pack_len] = [ #(#check),* ];
 
         fn __action(state: usize, terminal: usize) -> ::ferrolith::action::Action {
-            __ACTION_TABLE[state * __N_TERMINALS + terminal]
+            let index = __ACTION_DISP[state] + terminal as isize;
+            if index >= 0 && (index as usize) < #pack_len
+                && __ACTION_CHECK[index as usize] == state {
+                __ACTION_PACKED[index as usize]
+            } else {
+                ::ferrolith::action::Action::Error
+            }
         }
     }
 }
@@ -339,20 +431,21 @@ fn gen_default_reductions_fn(
     actions: &Actions,
     n_states: usize,
     n_terminals: usize,
-) -> proc_macro2::TokenStream {
+) -> (proc_macro2::TokenStream, Vec<usize>) {
     let defaults: Vec<_> = (0..n_states)
         .map(|state| {
             let mut default_prod: Option<usize> = None;
             let mut has_non_reduce = false;
             for t in 0..n_terminals {
                 match actions.get(&(state, t)) {
-                    Some(Action::Reduce(p)) => {
-                        match default_prod {
-                            None => default_prod = Some(*p),
-                            Some(q) if q == *p => {}
-                            _ => { has_non_reduce = true; break; }
+                    Some(Action::Reduce(p)) => match default_prod {
+                        None => default_prod = Some(*p),
+                        Some(q) if q == *p => {}
+                        _ => {
+                            has_non_reduce = true;
+                            break;
                         }
-                    }
+                    },
                     Some(Action::Shift(_)) | Some(Action::Accept) => {
                         has_non_reduce = true;
                         break;
@@ -360,13 +453,20 @@ fn gen_default_reductions_fn(
                     _ => {}
                 }
             }
-            if has_non_reduce { usize::MAX } else { default_prod.unwrap_or(usize::MAX) }
+            if has_non_reduce {
+                usize::MAX
+            } else {
+                default_prod.unwrap_or(usize::MAX)
+            }
         })
         .collect();
 
-    quote! {
-        static __DEFAULT_REDUCTIONS: [usize; #n_states] = [#(#defaults,)*];
-    }
+    (
+        quote! {
+            static __DEFAULT_REDUCTIONS: [usize; #n_states] = [#(#defaults,)*];
+        },
+        defaults.clone(),
+    )
 }
 
 fn gen_goto_function(
@@ -374,19 +474,101 @@ fn gen_goto_function(
     n_states: usize,
     n_nonterminals: usize,
 ) -> proc_macro2::TokenStream {
-    let table_size = n_states * n_nonterminals;
-    let mut table = vec![usize::MAX; table_size];
-    for ((state_id, nonterminal_id), dest_id) in gotos {
-        table[state_id * n_nonterminals + nonterminal_id] = *dest_id;
+    let mut rows = vec![];
+
+    for state in 0..n_states {
+        rows.push((state, vec![None; n_nonterminals]));
+        for ((state_id, nonterminal), dest) in gotos {
+            if *state_id == state {
+                rows[state].1[*nonterminal] = Some(dest);
+            }
+        }
     }
 
+    let mut packed = vec![];
+    let mut check = vec![];
+    let mut disp = vec![0isize; n_states];
+
+    rows.sort_by(|l, r| {
+        r.1.iter()
+            .filter(|r| r.is_some())
+            .count()
+            .cmp(&l.1.iter().filter(|l| l.is_some()).count())
+    });
+
+    for (state, row) in rows {
+        if row.iter().all(Option::is_none) {
+            disp[state] = 0;
+            continue;
+        }
+
+        let nonterminals: Vec<_> = row
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, dest)| {
+                if let Some(dest) = dest {
+                    Some((idx, **dest))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let min_nt = nonterminals[0].0 as isize;
+
+        let mut d = -min_nt;
+
+        loop {
+            let mut fit = true;
+            for (nonterminal, _) in &nonterminals {
+                if (d + *nonterminal as isize) as usize >= check.len()
+                    || check[(d + *nonterminal as isize) as usize] == usize::MAX
+                {
+                    continue;
+                }
+                fit = false;
+                break;
+            }
+
+            if fit {
+                break;
+            }
+            d += 1;
+        }
+
+        disp[state] = d;
+
+        for (nonterminal, dest) in nonterminals {
+            let slot = (d + nonterminal as isize) as usize;
+            if slot >= packed.len() {
+                while slot + 1 >= packed.len() {
+                    packed.push(usize::MAX);
+                    check.push(usize::MAX);
+                }
+            }
+
+            packed[slot] = dest;
+            check[slot] = state;
+        }
+    }
+
+    let pack_len = packed.len();
+
     quote! {
-        const __N_NONTERMINALS: usize = #n_nonterminals;
-        static __GOTO_TABLE: [usize; #table_size] = [#(#table,)*];
+        static __GOTO_DISP: [isize; #n_states] = [ #(#disp),* ];
+        static __GOTO_PACKED: [usize; #pack_len] = [ #(#packed),* ];
+        static __GOTO_CHECK: [usize; #pack_len] = [ #(#check),* ];
 
         fn __goto(state: usize, nonterminal: usize) -> usize {
-            __GOTO_TABLE[state * __N_NONTERMINALS + nonterminal]
+            let index = __GOTO_DISP[state] + nonterminal as isize;
+            if index >= 0 && (index as usize) < #pack_len
+                && __GOTO_CHECK[index as usize] == state {
+                    __GOTO_PACKED[index as usize]
+            } else {
+                usize::MAX
+            }
         }
+
     }
 }
 
@@ -787,7 +969,19 @@ fn gen_incremental_api(
             ///
             /// Equivalent to the `expected` field on [`::ferrolith::ParseError`].
             pub fn expected_terminals(&self) -> Vec<&'static str> {
-                __expected_tokens(self.current_state())
+                let mut states = self.state_stack.clone();
+                loop {
+                    let state = *states.last().unwrap();
+                    let default_prod = __DEFAULT_REDUCTIONS[state];
+                    if default_prod == usize::MAX {
+                        return __expected_tokens(state)
+                    }
+
+                    let (lhs, rhs_len) = __prod_info(default_prod);
+                    let trunc_len = states.len() - rhs_len;
+                    states.truncate(trunc_len);
+                    states.push(__goto(*states.last().unwrap(), lhs));
+                }
             }
         }
 
@@ -885,16 +1079,26 @@ fn gen_incremental_api(
                         return Checkpoint::Accepted(res);
                     }
                     ::ferrolith::action::Action::Error => {
-                        let expected = __expected_tokens(current_state);
-                        return Checkpoint::Rejected(state, match token {
-                            Some(t) => ::ferrolith::ParseError::UnexpectedToken {
-                                token: t,
-                                expected
-                            },
-                            None => ::ferrolith::ParseError::UnexpectedEof {
-                                expected
-                            },
-                        });
+                        let default_prod = __DEFAULT_REDUCTIONS[current_state];
+                        if default_prod != usize::MAX {
+                            let (lhs, rhs_len) = __prod_info(default_prod);
+                            let result = __reduce(default_prod, &mut state.value_stack);
+                            state.state_stack.truncate(state.state_stack.len() - rhs_len);
+                            let next = __goto(*state.state_stack.last().unwrap(), lhs);
+                            state.state_stack.push(next);
+                            state.value_stack.push(result);
+                        } else {
+                            let expected = __expected_tokens(current_state);
+                            return Checkpoint::Rejected(state, match token {
+                                Some(t) => ::ferrolith::ParseError::UnexpectedToken {
+                                    token: t,
+                                    expected
+                                },
+                                None => ::ferrolith::ParseError::UnexpectedEof {
+                                    expected
+                                },
+                            });
+                        }
                     }
                 }
             }

@@ -99,7 +99,7 @@ mod addition {
 }
 
 mod incremental {
-    use ferrolith::{grammar, ParseError};
+    use ferrolith::{ParseError, grammar};
 
     enum Tok {
         Num(i64),
