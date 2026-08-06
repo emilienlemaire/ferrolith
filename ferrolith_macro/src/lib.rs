@@ -766,6 +766,10 @@ fn gen_incremental_api(
         .then(|| quote! { #[derive(Clone)] });
 
     let types = quote! {
+        /// The intermediate parse state, carried inside [`Checkpoint::InputNeeded`].
+        ///
+        /// Obtain it by calling [`start`] or by unwrapping [`Checkpoint::InputNeeded`].
+        /// Pass it to [`feed`] together with the next token to advance the parse.
         #derive
         pub struct ParserState {
             state_stack: Vec<usize>,
@@ -773,23 +777,41 @@ fn gen_incremental_api(
         }
 
         impl ParserState {
+            /// Returns the numeric LR state the parser is currently in.
             pub fn current_state(&self) -> usize {
                 *self.state_stack.last().unwrap()
             }
 
+            /// Returns the names of the terminals that would advance the parse
+            /// without error in the current state.
+            ///
+            /// Equivalent to the `expected` field on [`::ferrolith::ParseError`].
             pub fn expected_terminals(&self) -> Vec<&'static str> {
                 __expected_tokens(self.current_state())
             }
         }
 
+        /// The result of a single parse step, returned by [`start`] and [`feed`].
         pub enum Checkpoint {
+            /// The parser consumed the last token and is ready for the next one.
+            /// Call [`feed`] with `Some(token)` for the next token, or `None` to
+            /// signal end of input.
             InputNeeded(ParserState),
+            /// The grammar was fully satisfied. The inner value is the result of
+            /// the start rule's action expression.
             Accepted(#start_ret_type),
+            /// The parser encountered an error it could not recover from. The first
+            /// field is the parser state at the point of failure (preserved for
+            /// diagnostics); the second describes what went wrong.
             Rejected(ParserState, ::ferrolith::ParseError<#tokens_type>),
         }
     };
 
     let start_fn = quote! {
+        /// Creates a fresh parser in its initial state.
+        ///
+        /// Returns [`Checkpoint::InputNeeded`] containing the initial [`ParserState`].
+        /// Feed the first token with [`feed`].
         pub fn start() -> Checkpoint {
             let mut state_stack = Vec::with_capacity(64);
             let value_stack = Vec::with_capacity(64);
@@ -826,6 +848,14 @@ fn gen_incremental_api(
     );
 
     let feed_fn = quote! {
+        /// Advances the parser by one token.
+        ///
+        /// Pass `Some(token)` to supply the next token, or `None` to signal end of
+        /// input. The returned [`Checkpoint`] describes the outcome.
+        ///
+        /// Only call this with a [`ParserState`] obtained from
+        /// [`Checkpoint::InputNeeded`]; calling it after acceptance or rejection is
+        /// a logic error.
         pub fn feed(mut state: ParserState, token: Option<#tokens_type>) -> Checkpoint {
             let terminal_id = __token_id_opt(token.as_ref());
             loop {

@@ -7,11 +7,21 @@ use crate::{
     grammar::{Assoc, InternalGrammar, NonTerminalId, ProductionId, StateId, Symbol, TerminalId},
 };
 
+/// The action the parser should take for a given (state, terminal) pair.
+///
+/// Returned by the generated `__action` function and exposed through the
+/// `action` function when `#![parser_cfg(expose_automaton)]` is set.
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub enum Action {
+    /// Shift the current token and push the given state onto the state stack.
     Shift(StateId),
+    /// Reduce by the given production: pop `rhs.len()` entries from both stacks,
+    /// evaluate the action expression, and push the result.
     Reduce(ProductionId),
+    /// The input is fully matched. The parse is complete.
     Accept,
+    /// The token is not valid in the current state. Triggers error recovery if
+    /// the grammar contains an `error` alternative; otherwise the parse fails.
     Error,
 }
 
