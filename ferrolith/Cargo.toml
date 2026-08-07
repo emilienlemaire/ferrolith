@@ -14,3 +14,4 @@ ferrolith_core = { path = "../ferrolith_core", version = "0.1" }
 
 [dev-dependencies]
 trybuild = "1"
+ferrelex  = "0.2"
