@@ -80,6 +80,122 @@
 //!
 //! ---
 //!
+//! ## Token payload
+//!
+//! A *payload* is user-defined data attached to each token and propagated through
+//! the parse. The canonical use case is source locations: attach a byte span to
+//! every token so action expressions can build an AST that carries span information.
+//!
+//! ### Declaring a payload type
+//!
+//! Add a `type Payload = T` declaration alongside `type Token`:
+//!
+//! ```rust,ignore
+//! grammar! {
+//!     type Token  = MyToken;
+//!     type Payload = Span;   // any type you choose
+//!     // ...
+//! }
+//! ```
+//!
+//! When a payload type is declared, `parse` and the incremental `feed` function
+//! expect `(Token, Payload)` pairs instead of bare tokens:
+//!
+//! ```rust,ignore
+//! // Without payload:
+//! parse(tokens.map(|t| t.kind))
+//!
+//! // With payload:
+//! parse(tokens.map(|t| (t.kind, t.span)))
+//! ```
+//!
+//! ### Accessing payloads in actions
+//!
+//! Inside an action expression, every symbol at position *k* (1-indexed from the
+//! left) exposes a `_k_payload` binding containing that symbol's payload:
+//!
+//! ```rust,ignore
+//! fn expr() -> Expr {
+//!     (Num(n)) => Expr::Num(n, _1_payload),
+//!     (l @ expr, Plus, r @ expr) => {
+//!         Expr::Add(Box::new(l), Box::new(r), Span::merge(_1_payload, _3_payload))
+//!     }
+//! }
+//! ```
+//!
+//! Nonterminal symbols (like `l @ expr`) carry the payload that was propagated
+//! when that sub-expression was reduced.
+//!
+//! ### Merge strategies
+//!
+//! When a rule reduces, Ferrolith computes the payload to attach to the resulting
+//! nonterminal by *merging* the payloads of its RHS symbols. Choose a strategy
+//! with `payload_merge_strategy` in `#![parser_cfg(...)]`:
+//!
+//! | Strategy | What it produces |
+//! |---|---|
+//! | `first_last` (default) | Calls `payload_merge(first, last)` — requires `payload_merge` |
+//! | `fold` | Right-folds all positions via `payload_merge` — requires `payload_merge` |
+//! | `first` | The payload of the first RHS symbol |
+//! | `last` | The payload of the last RHS symbol |
+//!
+//! Provide the merge function via `payload_merge = path`:
+//!
+//! ```rust,ignore
+//! fn merge_span(a: Span, b: Span) -> Span {
+//!     Span { start: a.start, end: b.end }
+//! }
+//!
+//! grammar! {
+//!     #![parser_cfg(payload_merge = merge_span, payload_merge_strategy = first_last)]
+//!
+//!     type Token   = MyToken;
+//!     type Payload = Span;
+//!     // ...
+//! }
+//! ```
+//!
+//! Rules with a single RHS symbol always propagate that symbol's payload directly,
+//! regardless of strategy.
+//!
+//! ### Overriding the payload in an action
+//!
+//! Assign to the reserved variable `_payload` inside an action to override whatever
+//! the merge strategy would have produced. The parent rule will then see this value
+//! in its `_k_payload` binding for this nonterminal:
+//!
+//! ```rust,ignore
+//! fn expr() -> Expr {
+//!     (l @ expr, Plus, r @ expr) => {
+//!         _payload = Span::merge(_1_payload, _3_payload);
+//!         Expr::Add(Box::new(l), Box::new(r))
+//!     }
+//! }
+//! ```
+//!
+//! ### Default payload for epsilon rules
+//!
+//! Epsilon alternatives (empty symbol list) cannot derive a payload from RHS symbols.
+//! They use `payload_default` from `parser_cfg` if set, otherwise `Payload::default()`.
+//!
+//! ```rust,ignore
+//! grammar! {
+//!     #![parser_cfg(payload_merge = merge_span, payload_merge_strategy = first_last,
+//!                   payload_default = Span::DUMMY)]
+//!
+//!     type Token   = MyToken;
+//!     type Payload = Span;
+//!
+//!     #[start]
+//!     fn items() -> Vec<Expr> {
+//!         ()                              => vec![],   // _payload = Span::DUMMY
+//!         (mut xs @ items, e @ expr) => { xs.push(e); xs }
+//!     }
+//! }
+//! ```
+//!
+//! ---
+//!
 //! ## Grammar rules
 //!
 //! Each rule is a Rust-like function with one or more alternatives:
@@ -334,7 +450,10 @@
 //!
 //! ## Error handling
 //!
-//! `parse` returns `Result<T, ParseError<Token>>`. [`ParseError`] has two variants:
+//! `parse` returns `Result<T, ParseError<Token>>`. When a [payload type](#token-payload)
+//! is declared the error type becomes `ParseError<(Token, Payload)>`, so the
+//! offending token and its payload are both available. [`ParseError`] has two
+//! variants:
 //!
 //! - [`ParseError::UnexpectedToken`]: the parser received a token it did not expect.
 //! - [`ParseError::UnexpectedEof`]: the token stream ended before the grammar was satisfied.
@@ -343,6 +462,7 @@
 //! *would* have been valid at that point, which is useful for error messages:
 //!
 //! ```rust,ignore
+//! // Without payload:
 //! match parse(tokens) {
 //!     Ok(value) => println!("parsed: {:?}", value),
 //!     Err(ferrolith::ParseError::UnexpectedToken { token, expected }) => {
@@ -351,6 +471,14 @@
 //!     Err(ferrolith::ParseError::UnexpectedEof { expected }) => {
 //!         eprintln!("unexpected end of input, expected one of: {}", expected.join(", "));
 //!     }
+//! }
+//!
+//! // With payload:
+//! match parse(tokens) {
+//!     Err(ferrolith::ParseError::UnexpectedToken { token: (tok, span), expected }) => {
+//!         eprintln!("at {:?}: unexpected {:?}, expected one of: {}", span, tok, expected.join(", "));
+//!     }
+//!     // ...
 //! }
 //! ```
 //!
@@ -387,6 +515,14 @@
 //!     Checkpoint::Rejected(_, err) => eprintln!("error: {}", err),
 //!     Checkpoint::InputNeeded(_)   => eprintln!("unexpected end of input"),
 //! }
+//! ```
+//!
+//! When a [payload type](#token-payload) is declared, `feed` accepts
+//! `Option<(Token, Payload)>` and `Checkpoint::Rejected` carries
+//! `ParseError<(Token, Payload)>`:
+//!
+//! ```rust,ignore
+//! let cp = feed(state, Some((my_token, my_span)));
 //! ```
 //!
 //! ### `ParserState`

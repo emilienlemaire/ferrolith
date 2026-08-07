@@ -8,7 +8,7 @@ use ferrolith_core::{
 };
 use heck::ToPascalCase;
 use proc_macro::TokenStream;
-use quote::{format_ident, quote, quote_spanned};
+use quote::{ToTokens, format_ident, quote, quote_spanned};
 use syn::parse_macro_input;
 
 use crate::internalize::RuleSet;
@@ -208,7 +208,7 @@ fn gen_value_enum(
         })
         .collect();
 
-    let tokens_type = &grammar.tokens_type.ty;
+    let tokens_type = &grammar.tokens_type;
 
     let derive = grammar
         .cfg
@@ -260,7 +260,7 @@ fn gen_token_enum(
     internal_grammar: &InternalGrammar,
     error_terminal_id: Option<usize>,
 ) -> proc_macro2::TokenStream {
-    let token_type = grammar.tokens_type.ty.as_ref();
+    let token_ty = &grammar.tokens_type;
 
     let captures = collect_capture_terminals(grammar);
 
@@ -272,16 +272,16 @@ fn gen_token_enum(
         .filter(|(id, _)| Some(*id) != error_terminal_id)
         .map(|(id, ident)| {
             if captures.contains(ident) {
-                quote! { #token_type::#ident(..) => #id, }
+                quote! { #token_ty::#ident(..) => #id, }
             } else {
-                quote! { #token_type::#ident => #id, }
+                quote! { #token_ty::#ident => #id, }
             }
         })
         .collect();
 
     quote! {
         enum __Token {
-            Real(#token_type),
+            Real(#token_ty),
             Eof,
         }
 
@@ -297,7 +297,7 @@ fn gen_token_enum(
             }
         }
 
-        fn __token_id_opt(token: Option<&#token_type>) -> usize {
+        fn __token_id_opt(token: Option<&#token_ty>) -> usize {
             match token {
                 None => 0,
                 Some(t) => match t {
@@ -579,7 +579,7 @@ fn gen_reduce_function(
 ) -> proc_macro2::TokenStream {
     let mut prod_code = vec![];
 
-    let tokens_type = &grammar.tokens_type.ty;
+    let tokens_type = &grammar.tokens_type;
 
     for (prod_id, production) in internal_grammar.productions.iter().enumerate() {
         if let Some(action_id) = production.action {
@@ -600,8 +600,23 @@ fn gen_reduce_function(
             for (idx, symbol) in arm.terms.iter().rev().enumerate() {
                 #[allow(non_snake_case)]
                 let vN = format_ident!("__v{}", idx);
+                let payload_id = format_ident!("_{}_payload", rhs_len - idx);
                 let assign = quote! { let #vN = value_stack.pop().unwrap(); };
                 let pos = format_ident!("_{}", rhs_len - idx);
+                let payload_pop = {
+                    if let Some(ref ty) = grammar.payload_type {
+                        let payload_default = if let Some(ref def) = grammar.cfg.payload_default {
+                            quote! { #def }
+                        } else {
+                            quote! { #ty::default() }
+                        };
+                        Some(quote! {
+                            let #payload_id = payload_stack.pop().unwrap_or_else(|| #payload_default );
+                        })
+                    } else {
+                        None
+                    }
+                };
                 let symbol_quote = match symbol {
                     GrammarSymbol::Bound { name, mutable, sym } => {
                         // Capture-in-Bound (e.g. `n @ Tok(x)`): the outer name is
@@ -735,18 +750,122 @@ fn gen_reduce_function(
                 };
                 arms_assigns.push(quote! {
                     #assign
+                    #payload_pop
                     #symbol_quote
                 });
             }
-
+            let payload_decl = {
+                if let Some(ref ty) = grammar.payload_type {
+                    Some(quote! {
+                        let mut _payload : #ty;
+                    })
+                } else {
+                    None
+                }
+            };
+            let payload_merge = {
+                if let Some(ref ty) = grammar.payload_type {
+                    if rhs_len == 0 {
+                        let payload_default = if let Some(ref def) = grammar.cfg.payload_default {
+                            quote! { #def }
+                        } else {
+                            quote! { #ty::default() }
+                        };
+                        Some(quote! {
+                            _payload = #payload_default;
+                        })
+                    } else if rhs_len == 1 {
+                        Some(quote! { _payload = _1_payload; })
+                    } else {
+                        match grammar.cfg.payload_merge_strategy {
+                            grammar::MergeStrategy::FirstLast => {
+                                let first = format_ident!("_1_payload");
+                                let last = format_ident!("_{}_payload", rhs_len);
+                                if let Some(ref merge) = grammar.cfg.payload_merge {
+                                    Some(quote! {
+                                        _payload = #merge(#first, #last);
+                                    })
+                                } else {
+                                    Some(syn::Error::new(
+                                        proc_macro2::Span::call_site(),
+                                        "`first_last` merge strategy requires a `payload_merge` setting.",
+                                    ).to_compile_error())
+                                }
+                            }
+                            grammar::MergeStrategy::Fold => {
+                                let gen_merge =
+                                    |left: proc_macro2::TokenStream,
+                                     right: proc_macro2::TokenStream| {
+                                        if let Some(ref merge) = grammar.cfg.payload_merge {
+                                            quote! {
+                                                #merge(#left, #right)
+                                            }
+                                        } else {
+                                            syn::Error::new(
+                                                proc_macro2::Span::call_site(),
+                                                "`fold` merge strategy requires a `payload_merge` setting.",
+                                            ).to_compile_error()
+                                        }
+                                };
+                                let mut merge = {
+                                    let last = format_ident!("_{}_payload", rhs_len);
+                                    let ob_last = format_ident!("_{}_payload", rhs_len - 1);
+                                    gen_merge(ob_last.to_token_stream(), last.to_token_stream())
+                                };
+                                for id in (1..rhs_len - 1).rev() {
+                                    let ident = format_ident!("_{}_payload", id);
+                                    merge = gen_merge(ident.to_token_stream(), merge);
+                                }
+                                Some(quote! {
+                                    _payload = #merge;
+                                })
+                            }
+                            grammar::MergeStrategy::First => {
+                                let ident = format_ident!("_1_payload");
+                                Some(quote! {
+                                    _payload = #ident;
+                                })
+                            }
+                            grammar::MergeStrategy::Last => {
+                                let ident = format_ident!("_{}_payload", rhs_len);
+                                Some(quote! {
+                                    _payload = #ident;
+                                })
+                            }
+                        }
+                    }
+                } else {
+                    None
+                }
+            };
             let action = &arm.action;
 
-            let ret_toks = if has_payload {
-                quote! { __Value::#lhs_variant(#action) }
-            } else {
-                quote! {
-                    #action;
-                    __Value::#lhs_variant
+            let ret_toks = match (grammar.payload_type.is_some(), has_payload) {
+                (true, true) => {
+                    quote! {
+                        #payload_decl
+                        #payload_merge
+                        (__Value::#lhs_variant(#action), _payload)
+                    }
+                }
+                (true, false) => {
+                    quote! {
+                        #payload_decl
+                        #payload_merge
+                        #action;
+                        (__Value::#lhs_variant, _payload)
+                    }
+                }
+                (false, true) => {
+                    quote! {
+                        __Value::#lhs_variant(#action)
+                    }
+                }
+                (false, false) => {
+                    quote! {
+                        #action;
+                        __Value::#lhs_variant
+                    }
                 }
             };
 
@@ -764,11 +883,26 @@ fn gen_reduce_function(
 
     let (prod_id, prod_code): (Vec<_>, Vec<_>) = prod_code.into_iter().unzip();
 
-    quote! {
-        fn __reduce(prod_id: usize, value_stack: &mut Vec<__Value>) -> __Value {
-            match prod_id {
-                #(#prod_id => { #prod_code },)*
-                _ => unreachable!(),
+    if let Some(ref ty) = grammar.payload_type {
+        quote! {
+            fn __reduce(
+                prod_id: usize,
+                value_stack: &mut Vec<__Value>,
+                payload_stack: &mut Vec<#ty>
+            ) -> (__Value, #ty) {
+                match prod_id {
+                    #(#prod_id => { #prod_code },)*
+                    _ => unreachable!(),
+                }
+            }
+        }
+    } else {
+        quote! {
+            fn __reduce(prod_id: usize, value_stack: &mut Vec<__Value>) -> __Value {
+                match prod_id {
+                    #(#prod_id => { #prod_code },)*
+                    _ => unreachable!(),
+                }
             }
         }
     }
@@ -796,7 +930,33 @@ fn gen_parse_function(
             .to_pascal_case()
     );
 
-    let token_type = grammar.tokens_type.ty.as_ref();
+    let token_type = &grammar.tokens_type;
+
+    let parse_ret_ty = if let Some(ref ty) = grammar.payload_type {
+        quote! {
+            (#token_type, #ty)
+        }
+    } else {
+        quote! { #token_type }
+    };
+
+    let token_id_expr = if grammar.payload_type.is_some() {
+        quote! {
+            __token_id_opt(token.as_ref().map(|(t, _)| t));
+        }
+    } else {
+        quote! {
+            __token_id_opt(token.as_ref());
+        }
+    };
+
+    let payload_stack_trunc = if grammar.payload_type.is_some() {
+        Some(quote! {
+            payload_stack.truncate(new_len.saturating_sub(1));
+        })
+    } else {
+        None
+    };
 
     let err_handling = if let Some(err_id) = error_terminal_id {
         quote! {
@@ -821,6 +981,7 @@ fn gen_parse_function(
 
                 state_stack.truncate(new_len);
                 value_stack.truncate(new_len.saturating_sub(1));
+                #payload_stack_trunc
 
                 state_stack.push(shift_target);
                 value_stack.push(__Value::T_Unit);
@@ -829,7 +990,7 @@ fn gen_parse_function(
                     let ::ferrolith::action::Action::Error = __action(shift_target, terminal_id)
                     && terminal_id != 0 {
                         token = tokens.next();
-                        terminal_id = __token_id_opt(token.as_ref());
+                        terminal_id = #token_id_expr;
                 }
 
                 if let ::ferrolith::action::Action::Error = __action(shift_target, terminal_id) {
@@ -873,33 +1034,94 @@ fn gen_parse_function(
         }
     };
 
+    let iter_type = if let Some(ref ty) = grammar.payload_type {
+        quote! {
+            impl Iterator<Item = (#token_type, #ty)>
+        }
+    } else {
+        quote! {
+            impl Iterator<Item = #token_type>
+        }
+    };
+
+    let payload_stack = if let Some(ref ty) = grammar.payload_type {
+        Some(quote! {
+            let mut payload_stack: Vec<#ty> = Vec::with_capacity(64);
+        })
+    } else {
+        None
+    };
+
+    let reduce_call = if grammar.payload_type.is_some() {
+        quote! {
+            let (result, payload_result) = __reduce(p, &mut value_stack, &mut payload_stack);
+        }
+    } else {
+        quote! {
+            let result = __reduce(p, &mut value_stack);
+        }
+    };
+
+    let reduce_call_default = if grammar.payload_type.is_some() {
+        quote! {
+            let (result, payload_result) =
+                __reduce(default_prod, &mut value_stack, &mut payload_stack);
+        }
+    } else {
+        quote! {
+            let result = __reduce(default_prod, &mut value_stack);
+        }
+    };
+
+    let reduce_payload_push = if grammar.payload_type.is_some() {
+        Some(quote! {
+            payload_stack.push(payload_result);
+        })
+    } else {
+        None
+    };
+
+    let shift_body = if grammar.payload_type.is_some() {
+        quote! {
+            let (tok, pay) = token.unwrap();
+            value_stack.push(__Value::T_Token(tok));
+            payload_stack.push(pay);
+        }
+    } else {
+        quote! {
+            value_stack.push(__Value::T_Token(token.unwrap()));
+        }
+    };
+
     quote! {
         pub fn parse(
-            mut tokens: impl Iterator<Item = #token_type>
-        ) -> Result<#start_ret_type, ::ferrolith::ParseError<#token_type>> {
+            mut tokens: #iter_type
+        ) -> Result<#start_ret_type, ::ferrolith::ParseError<#parse_ret_ty>> {
             let mut state_stack: Vec<usize> = Vec::with_capacity(64);
             let mut value_stack: Vec<__Value> = Vec::with_capacity(64);
+            #payload_stack
             state_stack.push(0usize);
 
             let mut token = tokens.next();
-            let mut terminal_id = __token_id_opt(token.as_ref());
+            let mut terminal_id = #token_id_expr;
 
             loop {
                 let state = *state_stack.last().unwrap();
                 match __action(state, terminal_id) {
                     ::ferrolith::action::Action::Shift(s) => {
                         state_stack.push(s);
-                        value_stack.push(__Value::T_Token(token.unwrap()));
+                        #shift_body
                         token = tokens.next();
-                        terminal_id = __token_id_opt(token.as_ref());
+                        terminal_id = #token_id_expr;
                     }
                     ::ferrolith::action::Action::Reduce(p) => {
                         let (lhs, rhs_len) = __prod_info(p);
-                        let result = __reduce(p, &mut value_stack);
+                        #reduce_call
                         state_stack.truncate(state_stack.len() - rhs_len);
                         let next = __goto(*state_stack.last().unwrap(), lhs);
                         state_stack.push(next);
                         value_stack.push(result);
+                        #reduce_payload_push
                     }
                     ::ferrolith::action::Action::Accept => {
                         return Ok(match value_stack.pop().unwrap() {
@@ -911,11 +1133,12 @@ fn gen_parse_function(
                         let default_prod = __DEFAULT_REDUCTIONS[state];
                         if default_prod != usize::MAX {
                             let (lhs, rhs_len) = __prod_info(default_prod);
-                            let result = __reduce(default_prod, &mut value_stack);
+                            #reduce_call_default
                             state_stack.truncate(state_stack.len() - rhs_len);
                             let next = __goto(*state_stack.last().unwrap(), lhs);
                             state_stack.push(next);
                             value_stack.push(result);
+                            #reduce_payload_push
                         } else {
                             #err_handling
                         }
@@ -940,12 +1163,30 @@ fn gen_incremental_api(
         None => syn::parse_quote!(()),
     };
 
-    let tokens_type = grammar.tokens_type.ty.as_ref();
+    let tokens_type = &grammar.tokens_type;
 
     let derive = grammar
         .cfg
         .clonable_state
         .then(|| quote! { #[derive(Clone)] });
+
+    let payload_stack_field = if let Some(ref ty) = grammar.payload_type {
+        Some(quote! {
+            pub payload_stack: Vec<#ty>,
+        })
+    } else {
+        None
+    };
+
+    let checkpoint_err_ty = if let Some(ref ty) = grammar.payload_type {
+        quote! {
+            (#tokens_type, #ty)
+        }
+    } else {
+        quote! {
+            #tokens_type
+        }
+    };
 
     let types = quote! {
         /// The intermediate parse state, carried inside [`Checkpoint::InputNeeded`].
@@ -954,8 +1195,9 @@ fn gen_incremental_api(
         /// Pass it to [`feed`] together with the next token to advance the parse.
         #derive
         pub struct ParserState {
-            state_stack: Vec<usize>,
-            value_stack: Vec<__Value>,
+            pub state_stack: Vec<usize>,
+            pub value_stack: Vec<__Value>,
+            #payload_stack_field
         }
 
         impl ParserState {
@@ -997,7 +1239,24 @@ fn gen_incremental_api(
             /// The parser encountered an error it could not recover from. The first
             /// field is the parser state at the point of failure (preserved for
             /// diagnostics); the second describes what went wrong.
-            Rejected(ParserState, ::ferrolith::ParseError<#tokens_type>),
+            Rejected(ParserState, ::ferrolith::ParseError<#checkpoint_err_ty>),
+        }
+    };
+
+    let start_fn_body = if grammar.payload_type.is_some() {
+        quote! {
+            let mut state_stack = Vec::with_capacity(64);
+            let value_stack = Vec::with_capacity(64);
+            state_stack.push(0usize);
+            let payload_stack = Vec::with_capacity(64);
+            Checkpoint::InputNeeded(ParserState { state_stack, value_stack, payload_stack })
+        }
+    } else {
+        quote! {
+            let mut state_stack = Vec::with_capacity(64);
+            let value_stack = Vec::with_capacity(64);
+            state_stack.push(0usize);
+            Checkpoint::InputNeeded(ParserState { state_stack, value_stack })
         }
     };
 
@@ -1007,10 +1266,7 @@ fn gen_incremental_api(
         /// Returns [`Checkpoint::InputNeeded`] containing the initial [`ParserState`].
         /// Feed the first token with [`feed`].
         pub fn start() -> Checkpoint {
-            let mut state_stack = Vec::with_capacity(64);
-            let value_stack = Vec::with_capacity(64);
-            state_stack.push(0usize);
-            Checkpoint::InputNeeded(ParserState { state_stack, value_stack })
+            #start_fn_body
         }
     };
 
@@ -1041,6 +1297,76 @@ fn gen_incremental_api(
             .to_pascal_case()
     );
 
+    let token_ty = if let Some(ref ty) = grammar.payload_type {
+        quote! {
+            (#tokens_type, #ty)
+        }
+    } else {
+        quote! {
+            #tokens_type
+        }
+    };
+
+    let token_id_expr = if grammar.payload_type.is_some() {
+        quote! {
+            __token_id_opt(token.as_ref().map(|(t, _)| t))
+        }
+    } else {
+        quote! {
+            __token_id_opt(token.as_ref())
+        }
+    };
+
+    let shift_arm = if grammar.payload_type.is_some() {
+        quote! {
+            let (tok, pay) = token.expect("shift on EOF is a parser bug");
+            state.value_stack.push(__Value::T_Token(tok));
+            state.payload_stack.push(pay);
+        }
+    } else {
+        quote! {
+            state.value_stack.push(
+                __Value::T_Token(
+                    token.expect("shift on EOF is a parser bug")
+                )
+            );
+        }
+    };
+
+    let reduce_call = if grammar.payload_type.is_some() {
+        quote! {
+            let (result, payload_result) = __reduce(
+                p,
+                &mut state.value_stack,
+                &mut state.payload_stack);
+        }
+    } else {
+        quote! {
+            let result = __reduce(p, &mut state.value_stack);
+        }
+    };
+
+    let reduce_call_default = if grammar.payload_type.is_some() {
+        quote! {
+            let (result, payload_result) = __reduce(
+                default_prod,
+                &mut state.value_stack,
+                &mut state.payload_stack);
+        }
+    } else {
+        quote! {
+            let result = __reduce(default_prod, &mut state.value_stack);
+        }
+    };
+
+    let reduce_payload_push = if grammar.payload_type.is_some() {
+        Some(quote! {
+            state.payload_stack.push(payload_result);
+        })
+    } else {
+        None
+    };
+
     let feed_fn = quote! {
         /// Advances the parser by one token.
         ///
@@ -1050,23 +1376,22 @@ fn gen_incremental_api(
         /// Only call this with a [`ParserState`] obtained from
         /// [`Checkpoint::InputNeeded`]; calling it after acceptance or rejection is
         /// a logic error.
-        pub fn feed(mut state: ParserState, token: Option<#tokens_type>) -> Checkpoint {
-            let terminal_id = __token_id_opt(token.as_ref());
+        pub fn feed(mut state: ParserState, token: Option<#token_ty>) -> Checkpoint {
+            let terminal_id = #token_id_expr;
             loop {
                 let current_state = *state.state_stack.last().unwrap();
                 match __action(current_state, terminal_id) {
                     ::ferrolith::action::Action::Shift(s) => {
                         state.state_stack.push(s);
-                        state.value_stack.push(__Value::T_Token(
-                            token.expect("shift on EOF is a parser bug"),
-                        ));
+                        #shift_arm
                         return Checkpoint::InputNeeded(state);
                     }
                     ::ferrolith::action::Action::Reduce(p) => {
                         let (lhs, rhs_len) = __prod_info(p);
-                        let result = __reduce(p, &mut state.value_stack);
+                        #reduce_call
                         state.state_stack.truncate(state.state_stack.len() - rhs_len);
                         let next = __goto(*state.state_stack.last().unwrap(), lhs);
+                        #reduce_payload_push
                         state.state_stack.push(next);
                         state.value_stack.push(result);
                     }
@@ -1082,9 +1407,10 @@ fn gen_incremental_api(
                         let default_prod = __DEFAULT_REDUCTIONS[current_state];
                         if default_prod != usize::MAX {
                             let (lhs, rhs_len) = __prod_info(default_prod);
-                            let result = __reduce(default_prod, &mut state.value_stack);
+                            #reduce_call_default
                             state.state_stack.truncate(state.state_stack.len() - rhs_len);
                             let next = __goto(*state.state_stack.last().unwrap(), lhs);
+                            #reduce_payload_push
                             state.state_stack.push(next);
                             state.value_stack.push(result);
                         } else {

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use ferrolith_core::grammar::{Assoc, PrecLevel, Production, Symbol, TerminalId};
 use quote::format_ident;
-use syn::{Token, parse::Parse};
+use syn::{Token, parse::Parse, spanned::Spanned};
 
 use crate::internalize::app_ident;
 
@@ -48,34 +48,160 @@ pub(super) struct PrecedenceDecl {
 }
 
 #[derive(Default)]
+pub(super) enum MergeStrategy {
+    #[default]
+    FirstLast,
+    Fold,
+    First,
+    Last,
+}
+
+#[derive(Default)]
 pub(super) struct ParserCfg {
     pub(super) expose_automaton: bool,
     pub(super) clonable_state: bool,
+    pub(super) payload_merge: Option<syn::Path>,
+    pub(super) payload_merge_strategy: MergeStrategy,
+    pub(super) payload_default: Option<syn::Expr>,
 }
 
 impl ParserCfg {
     fn apply(&mut self, attr: &syn::Attribute) -> syn::Result<()> {
         let opts = attr.parse_args_with(
-            syn::punctuated::Punctuated::<syn::Ident, syn::Token![,]>::parse_terminated,
+            syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
         )?;
+        let mut err: Option<syn::Error> = None;
         for opt in opts {
-            match opt.to_string().as_str() {
-                "expose_automaton" => self.expose_automaton = true,
-                "clonable_state" => self.clonable_state = true,
-                other => {
-                    return Err(syn::Error::new(
-                        opt.span(),
-                        format!("unknown parser_cfg option `{other}`"),
-                    ));
+            match opt {
+                syn::Meta::Path(path) => {
+                    if let Ok(ident) = path.require_ident() {
+                        match ident.to_string().as_str() {
+                            "expose_automaton" => self.expose_automaton = true,
+                            "clonable_state" => self.clonable_state = true,
+                            other => {
+                                let new_err = syn::Error::new(
+                                    ident.span(),
+                                    format!("unknown parser_cfg option `{other}`"),
+                                );
+                                if let Some(ref mut err) = err {
+                                    err.combine(new_err);
+                                } else {
+                                    err = Some(new_err);
+                                }
+                            }
+                        }
+                    } else {
+                        let new_err =
+                            syn::Error::new(path.span(), format!("unknown parser_cfg option"));
+                        if let Some(ref mut err) = err {
+                            err.combine(new_err);
+                        } else {
+                            err = Some(new_err);
+                        }
+                    }
+                }
+                syn::Meta::NameValue(ref name_value) => {
+                    let name_path = &name_value.path;
+                    if let Ok(name) = name_path.require_ident() {
+                        match name.to_string().to_lowercase().as_str() {
+                            "payload_merge" => match &name_value.value {
+                                syn::Expr::Path(path) => {
+                                    self.payload_merge = Some(path.path.clone());
+                                }
+                                _ => {
+                                    let new_err = syn::Error::new(
+                                        name_value.span(),
+                                        String::from("expecting a path as `payload_merge` value"),
+                                    );
+                                    if let Some(ref mut err) = err {
+                                        err.combine(new_err);
+                                    } else {
+                                        err = Some(new_err);
+                                    }
+                                }
+                            },
+                            "payload_merge_strategy" => match &name_value.value {
+                                syn::Expr::Path(path)
+                                    if let Ok(path) = path.path.require_ident()
+                                        && matches!(
+                                            path.to_string().to_lowercase().as_str(),
+                                            "first_last" | "fold" | "first" | "last"
+                                        ) =>
+                                {
+                                    self.payload_merge_strategy =
+                                        match path.to_string().to_lowercase().as_str() {
+                                            "first_last" => MergeStrategy::FirstLast,
+                                            "fold" => MergeStrategy::Fold,
+                                            "first" => MergeStrategy::First,
+                                            "last" => MergeStrategy::Last,
+                                            _ => unreachable!(),
+                                        }
+                                }
+                                _ => {
+                                    let new_err = syn::Error::new(
+                                        name_value.span(),
+                                        String::from(
+                                            "expecting one of `first_last`, `fold`, `first`, or \
+                                            `last` for `payload_merge_strategy`.",
+                                        ),
+                                    );
+                                    if let Some(ref mut err) = err {
+                                        err.combine(new_err);
+                                    } else {
+                                        err = Some(new_err);
+                                    }
+                                }
+                            },
+                            "payload_default" => {
+                                self.payload_default = Some(name_value.value.clone())
+                            }
+                            other => {
+                                let new_err = syn::Error::new(
+                                    name.span(),
+                                    format!("unknown parser_cfg option `{other}`"),
+                                );
+                                if let Some(ref mut err) = err {
+                                    err.combine(new_err);
+                                } else {
+                                    err = Some(new_err);
+                                }
+                            }
+                        }
+                    } else {
+                        let new_err = syn::Error::new(
+                            name_value.span(),
+                            format!("unknown parser_cfg option"),
+                        );
+                        if let Some(ref mut err) = err {
+                            err.combine(new_err);
+                        } else {
+                            err = Some(new_err);
+                        }
+                    }
+                }
+                syn::Meta::List(list) => {
+                    let new_err =
+                        syn::Error::new(list.span(), format!("unknown parser_cfg option"));
+                    if let Some(ref mut err) = err {
+                        err.combine(new_err);
+                    } else {
+                        err = Some(new_err);
+                    }
                 }
             }
         }
-        Ok(())
+
+        if let Some(err) = err {
+            Err(err)
+        } else {
+            Ok(())
+        }
     }
 }
 
 pub(super) struct Grammar {
-    pub(super) tokens_type: syn::ItemType,
+    pub(super) tokens_type: syn::Type,
+    pub(super) payload_type: Option<syn::Type>,
     pub(super) precedences: Vec<PrecedenceDecl>,
     pub(super) rules: Vec<Rule>,
     pub(super) cfg: ParserCfg,
@@ -99,6 +225,7 @@ fn partition_attrs(
 impl syn::parse::Parse for Grammar {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let mut token_type = None;
+        let mut payload_type = None;
         let mut precs = vec![];
         let mut rules = vec![];
         let mut cfg = ParserCfg::default();
@@ -122,7 +249,17 @@ impl syn::parse::Parse for Grammar {
             let attrs = input.call(syn::Attribute::parse_outer)?;
 
             if input.peek(syn::Token![type]) {
-                token_type = Some(input.parse::<syn::ItemType>()?);
+                let typ = input.parse::<syn::ItemType>()?;
+                match typ.ident.to_string().as_str() {
+                    "Token" => token_type = Some(*typ.ty),
+                    "Payload" => payload_type = Some(*typ.ty),
+                    _ => {
+                        return Err(syn::Error::new(
+                            typ.span(),
+                            "Only `Token` and `Payload` type aliases are allowed in the `grammar!` macro.",
+                        ));
+                    }
+                }
             } else if input.peek(syn::Token![fn]) {
                 let rule_attrs = partition_attrs(attrs, &mut precs)?;
                 rules.push(Rule::parse_with_attrs(rule_attrs, input)?);
@@ -143,6 +280,7 @@ impl syn::parse::Parse for Grammar {
 
         Ok(Grammar {
             tokens_type,
+            payload_type,
             precedences: precs,
             rules,
             cfg,
