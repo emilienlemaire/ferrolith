@@ -1,0 +1,172 @@
+# Ferrolith
+
+Ferrolith is an LR(1) parser generator for Rust. You describe your grammar inside a `grammar!` macro and it gets compiled at build time into a fully typed Rust parser. No generated source files, no build scripts, nothing to check in.
+
+```rust
+use ferrolith::grammar;
+
+#[derive(Debug)]
+enum Token { Num(i64), Plus, Star }
+
+grammar! {
+    type Token = Token;
+
+    #[left(Plus)]
+    #[left(Star)]
+
+    #[start]
+    fn expr() -> i64 {
+        (Num(n))                   => n,
+        (l @ expr, Plus, r @ expr) => l + r,
+        (l @ expr, Star, r @ expr) => l * r,
+    }
+}
+
+fn main() {
+    // Star binds tighter than Plus, so this is 2 + (3 * 4) = 14.
+    let result = parse(
+        [Token::Num(2), Token::Plus, Token::Num(3), Token::Star, Token::Num(4)].into_iter()
+    );
+    assert_eq!(result.unwrap(), 14);
+}
+```
+
+The `grammar!` block generates a `parse` function in the current scope.
+
+## Features
+
+- **LR(1) construction** at compile time, using canonical item sets and lookahead sets
+- **Named and positional bindings** (`l @ expr`, `Num(n)`, `_2`)
+- **Operator precedence and associativity** via `#[left]`, `#[right]`, `#[nonassoc]`
+- **Built-in combinators**: `star`, `plus`, `opt`, `sep`, `sep_opt`
+- **Parametric rules** for reusable higher-order combinators
+- **Token payload**: attach data (like source locations) to tokens and propagate it through the parse
+- **Error recovery** via the `error` pseudo-token, modelled on yacc/bison panic-mode recovery
+- **Incremental API**: feed tokens one at a time with `start()` / `feed()` / `Checkpoint`
+- **Compile-time grammar checks**: undefined rules, unreachable rules, and non-productive rules all become build errors
+- **Optional cloneable state** for speculative parsing
+- **Optional automaton introspection** for tooling and visualisation
+
+## Quick start
+
+Add the crate to your `Cargo.toml`:
+
+```toml
+[dependencies]
+ferrolith = "0.1"
+```
+
+Then write a `grammar!` block anywhere in your code. The block generates `parse`, `start`, `feed`, and `Checkpoint` in the surrounding scope.
+
+## Grammar at a glance
+
+### Token type
+
+```rust
+grammar! {
+    type Token = MyToken;
+    // ...
+}
+```
+
+Token variants are matched in PascalCase. Unit variants (`Plus`) discard the token; tuple variants (`Num(n)`) bind the inner fields.
+
+### Rules
+
+```rust
+fn expr() -> i64 {
+    (Num(n))                   => n,
+    (l @ expr, Plus, r @ expr) => l + r,
+}
+```
+
+`l @ expr` runs the `expr` rule and binds its return value to `l`. Positional bindings (`_1`, `_2`, ...) are always available alongside named ones.
+
+### Precedence
+
+```rust
+#[left(Plus, Minus)]  // lowest
+#[left(Star, Slash)]  // higher
+#[right(Caret)]       // highest, right-associative
+```
+
+Declarations go before the first rule in the `grammar!` block. They resolve shift/reduce conflicts: higher token precedence shifts, equal precedence follows associativity. Unresolved conflicts produce a compile-time warning and default to shift; reduce/reduce conflicts are always a compile-time error.
+
+### Built-in combinators
+
+| Combinator | Matches | Returns |
+|---|---|---|
+| `star(x)` | zero or more `x` | `Vec<_>` |
+| `plus(x)` | one or more `x` | `Vec<_>` |
+| `opt(x)` | zero or one `x` | `Option<_>` |
+| `sep(Sep, x)` | one or more `x` separated by `Sep` | `Vec<_>` |
+| `sep_opt(Sep, x)` | zero or more `x` separated by `Sep` | `Vec<_>` |
+
+### Token payload
+
+Attach a type to each token (source spans are the common case) and have it propagated through reductions automatically:
+
+```rust
+grammar! {
+    #![parser_cfg(payload_merge = merge_span, payload_merge_strategy = first_last)]
+
+    type Token   = MyToken;
+    type Payload = Span;
+
+    #[start]
+    fn expr() -> Expr {
+        (Num(n))                   => Expr::Num(n, _1_payload),
+        (l @ expr, Plus, r @ expr) => Expr::Add(Box::new(l), Box::new(r), _payload),
+    }
+}
+```
+
+`_k_payload` holds the payload of the k-th RHS symbol. `_payload` is the merged payload for the current production, which your action can also override before returning.
+
+### Error recovery
+
+```rust
+fn stmt() -> Option<Stmt> {
+    (s @ expr, Semi) => Some(s),
+    (error, Semi)    => None,  // discard bad tokens up to the next semicolon
+}
+```
+
+`error` is a reserved keyword in the grammar DSL. When the parser gets stuck, it walks the state stack looking for a recovery point and then discards input until it can continue.
+
+### Incremental API
+
+```rust
+let mut cp = start();
+
+for token in token_stream {
+    cp = match cp {
+        Checkpoint::InputNeeded(state) => feed(state, Some(token)),
+        other => break,
+    };
+}
+
+match feed(cp_state, None) {
+    Checkpoint::Accepted(value) => println!("{value:?}"),
+    Checkpoint::Rejected(_, err) => eprintln!("{err}"),
+    Checkpoint::InputNeeded(_) => eprintln!("unexpected end of input"),
+}
+```
+
+Add `#![parser_cfg(clonable_state)]` if you need to clone the state for speculative parsing.
+
+## Project layout
+
+| Crate | Role |
+|---|---|
+| `ferrolith` | Public API: re-exports `grammar!` and the runtime types (`ParseError`, `AutomatonView`, ...) |
+| `ferrolith_macro` | Proc-macro: parses the `grammar!` DSL, builds the LR(1) automaton, emits Rust code |
+| `ferrolith_core` | Library: LR(1) construction (first sets, item sets, action and goto tables) |
+
+## AI usage
+
+This project was built with AI assistance throughout. Claude was used as a tool during the design phase to think through grammar representations, LR(1) construction trade-offs, and the macro DSL syntax. It helped generate large parts of the documentation and doctest examples, contributed to writing the test suite (basic parse tests, error recovery, payloads, parametric rules), and produced the `twig.rs` example. The code was written and reviewed by me, with AI output adjusted before being committed.
+
+## License
+
+LGPL-3.0-only. See `LICENSE` for the full text.
