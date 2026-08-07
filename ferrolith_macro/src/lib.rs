@@ -608,7 +608,7 @@ fn gen_reduce_function(
                         let payload_default = if let Some(ref def) = grammar.cfg.payload_default {
                             quote! { #def }
                         } else {
-                            quote! { #ty::default() }
+                            quote! { <#ty>::default() }
                         };
                         Some(quote! {
                             let #payload_id = payload_stack.pop().unwrap_or_else(|| #payload_default );
@@ -769,7 +769,7 @@ fn gen_reduce_function(
                         let payload_default = if let Some(ref def) = grammar.cfg.payload_default {
                             quote! { #def }
                         } else {
-                            quote! { #ty::default() }
+                            quote! { <#ty>::default() }
                         };
                         Some(quote! {
                             _payload = #payload_default;

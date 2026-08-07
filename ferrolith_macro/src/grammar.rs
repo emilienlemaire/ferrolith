@@ -249,13 +249,17 @@ impl syn::parse::Parse for Grammar {
             let attrs = input.call(syn::Attribute::parse_outer)?;
 
             if input.peek(syn::Token![type]) {
-                let typ = input.parse::<syn::ItemType>()?;
-                match typ.ident.to_string().as_str() {
-                    "Token" => token_type = Some(*typ.ty),
-                    "Payload" => payload_type = Some(*typ.ty),
+                input.parse::<syn::Token![type]>()?;
+                let ident = input.parse::<syn::Ident>()?;
+                input.parse::<syn::Token![=]>()?;
+                let ty = input.parse::<syn::Type>()?;
+                input.parse::<syn::Token![;]>()?;
+                match ident.to_string().as_str() {
+                    "Token" => token_type = Some(ty),
+                    "Payload" => payload_type = Some(ty),
                     _ => {
                         return Err(syn::Error::new(
-                            typ.span(),
+                            ident.span(),
                             "Only `Token` and `Payload` type aliases are allowed in the `grammar!` macro.",
                         ));
                     }
