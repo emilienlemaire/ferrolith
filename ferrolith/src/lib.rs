@@ -124,11 +124,20 @@
 //! }
 //! ```
 //!
-//! The payload type must implement [`Copy`], since the generated actions read
-//! payload bindings more than once. It must also implement [`Default`] unless you
-//! set `payload_default` in `#![parser_cfg(...)]` (see
+//! The payload type must implement [`Clone`]. It must also implement [`Default`]
+//! unless you set `payload_default` in `#![parser_cfg(...)]` (see
 //! [Default payload for epsilon rules](#default-payload-for-epsilon-rules)): the
 //! generated parser falls back to it whenever a payload is missing.
+//!
+//! Payloads are moved, not cloned, wherever possible. A `_k_payload` is cloned
+//! only when your action reads it *and* the merge strategy also consumes it, so
+//! actions that don't look at payloads never clone. For a [`Copy`] type such as a
+//! byte span, a clone is just a copy; for an expensive payload, consider wrapping
+//! it in [`Rc`](std::rc::Rc).
+//!
+//! **Note:** reading `_payload` itself in an action moves it, and the parser still
+//! needs it afterwards to pass it up to the parent rule. With a non-`Copy`
+//! payload, write `_payload.clone()` when storing it in your result.
 //!
 //! When a payload type is declared, `parse` and the incremental `feed` function
 //! expect `(Token, Payload)` pairs instead of bare tokens:

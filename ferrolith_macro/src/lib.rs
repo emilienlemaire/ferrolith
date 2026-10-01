@@ -8,6 +8,7 @@ use ferrolith_core::{
 };
 use heck::ToPascalCase;
 use proc_macro::TokenStream;
+use proc_macro2::TokenTree;
 use quote::{ToTokens, format_ident, quote, quote_spanned};
 use syn::parse_macro_input;
 
@@ -765,6 +766,15 @@ fn gen_reduce_function(
                 }
             };
             let payload_merge = {
+                let action_tokens = arm.action.to_token_stream();
+                let payload_arg = |k: usize| -> proc_macro2::TokenStream {
+                    let id = format_ident!("_{}_payload", k);
+                    if tokens_mention(action_tokens.clone(), &id) {
+                        quote! { #id.clone() }
+                    } else {
+                        quote! { #id }
+                    }
+                };
                 if let Some(ref ty) = grammar.payload_type {
                     if rhs_len == 0 {
                         let payload_default = if let Some(ref def) = grammar.cfg.payload_default {
@@ -776,12 +786,13 @@ fn gen_reduce_function(
                             _payload = #payload_default;
                         })
                     } else if rhs_len == 1 {
-                        Some(quote! { _payload = _1_payload; })
+                        let arg = payload_arg(1);
+                        Some(quote! { _payload = #arg; })
                     } else {
                         match grammar.cfg.payload_merge_strategy {
                             grammar::MergeStrategy::FirstLast => {
-                                let first = format_ident!("_1_payload");
-                                let last = format_ident!("_{}_payload", rhs_len);
+                                let first = payload_arg(1);
+                                let last = payload_arg(rhs_len);
                                 if let Some(ref merge) = grammar.cfg.payload_merge {
                                     Some(quote! {
                                         _payload = #merge(#first, #last);
@@ -809,12 +820,12 @@ fn gen_reduce_function(
                                         }
                                 };
                                 let mut merge = {
-                                    let last = format_ident!("_{}_payload", rhs_len);
-                                    let ob_last = format_ident!("_{}_payload", rhs_len - 1);
+                                    let last = payload_arg(rhs_len);
+                                    let ob_last = payload_arg(rhs_len - 1);
                                     gen_merge(ob_last.to_token_stream(), last.to_token_stream())
                                 };
                                 for id in (1..rhs_len - 1).rev() {
-                                    let ident = format_ident!("_{}_payload", id);
+                                    let ident = payload_arg(id);
                                     merge = gen_merge(ident.to_token_stream(), merge);
                                 }
                                 Some(quote! {
@@ -822,13 +833,13 @@ fn gen_reduce_function(
                                 })
                             }
                             grammar::MergeStrategy::First => {
-                                let ident = format_ident!("_1_payload");
+                                let ident = payload_arg(1);
                                 Some(quote! {
                                     _payload = #ident;
                                 })
                             }
                             grammar::MergeStrategy::Last => {
-                                let ident = format_ident!("_{}_payload", rhs_len);
+                                let ident = payload_arg(rhs_len);
                                 Some(quote! {
                                     _payload = #ident;
                                 })
@@ -1441,6 +1452,17 @@ fn gen_incremental_api(
 
         #feed_fn
     }
+}
+
+fn tokens_mention(ts: proc_macro2::TokenStream, name: &syn::Ident) -> bool {
+    for tk in ts {
+        match tk {
+            TokenTree::Ident(i) if i == *name => return true,
+            TokenTree::Group(g) if tokens_mention(g.stream(), name) => return true,
+            _ => (),
+        }
+    }
+    false
 }
 
 fn symbol_to_tokens(sym: &Symbol) -> proc_macro2::TokenStream {

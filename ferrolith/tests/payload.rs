@@ -451,3 +451,197 @@ mod generic_token {
         assert!(matches!(feed(s, None), Checkpoint::Accepted((5, 7))));
     }
 }
+
+// Non-`Copy` payloads: the merge consumes `_k_payload`, so the macro must clone the
+// ones the action reads and move the others.
+mod vec_payload_read_in_action {
+    use ferrolith::grammar;
+
+    enum Tok {
+        Num(i64),
+        Plus,
+        Neg,
+    }
+
+    fn concat(mut a: Vec<u32>, b: Vec<u32>) -> Vec<u32> {
+        a.extend(b);
+        a
+    }
+
+    grammar! {
+        #![parser_cfg(payload_merge = concat, payload_merge_strategy = first_last)]
+
+        type Token = Tok;
+        type Payload = Vec<u32>;
+
+        #[left(Plus)]
+        #[left(Neg)]
+
+        #[start]
+        fn expr() -> (i64, Vec<u32>) {
+            // Single symbol: `_payload = _1_payload` and the action reads `_1_payload`.
+            (Num(n)) => (n, _1_payload),
+            // `_1_payload` feeds the merge and is read inside a macro call.
+            (Neg, e @ expr) => {
+                assert_eq!(format!("{:?}", _1_payload), "[3]");
+                (-e.0, _payload.clone())
+            },
+            (l @ expr, Plus, r @ expr) => (l.0 + r.0, _payload.clone()),
+        }
+    }
+
+    #[test]
+    fn reads_after_merge() {
+        let tokens = [
+            (Tok::Num(1), vec![1]),
+            (Tok::Plus, vec![2]),
+            (Tok::Neg, vec![3]),
+            (Tok::Num(2), vec![4]),
+        ];
+        let (v, p) = parse(tokens.into_iter()).unwrap();
+        assert_eq!(v, -1);
+        // Neg: concat([3], [4]); Plus: concat([1], [3, 4]).
+        assert_eq!(p, vec![1, 3, 4]);
+    }
+}
+
+mod vec_payload_fold_without_reads {
+    use ferrolith::grammar;
+
+    enum Tok {
+        Num(i64),
+        LParen,
+        RParen,
+    }
+
+    fn concat(mut a: Vec<u32>, b: Vec<u32>) -> Vec<u32> {
+        a.extend(b);
+        a
+    }
+
+    grammar! {
+        #![parser_cfg(payload_merge = concat, payload_merge_strategy = fold)]
+
+        type Token = Tok;
+        type Payload = Vec<u32>;
+
+        #[start]
+        fn top() -> (i64, Vec<u32>) {
+            (e @ expr) => (e, _payload.clone()),
+        }
+
+        fn expr() -> i64 {
+            (Num(n))                   => n,
+            (LParen, e @ expr, RParen) => e,
+        }
+    }
+
+    #[test]
+    fn folds_every_position() {
+        let tokens = [
+            (Tok::LParen, vec![1]),
+            (Tok::LParen, vec![2]),
+            (Tok::Num(5), vec![3]),
+            (Tok::RParen, vec![4]),
+            (Tok::RParen, vec![5]),
+        ];
+        assert_eq!(parse(tokens.into_iter()).unwrap(), (5, vec![1, 2, 3, 4, 5]));
+    }
+}
+
+// Clones happen only for payloads an action actually reads.
+mod clone_only_when_read {
+    use std::cell::Cell;
+
+    thread_local! {
+        static CLONES: Cell<usize> = const { Cell::new(0) };
+    }
+
+    #[derive(Default)]
+    pub struct Counted(pub u32);
+
+    impl Clone for Counted {
+        fn clone(&self) -> Self {
+            CLONES.with(|c| c.set(c.get() + 1));
+            Counted(self.0)
+        }
+    }
+
+    pub fn add(a: Counted, b: Counted) -> Counted {
+        Counted(a.0 + b.0)
+    }
+
+    pub enum Tok {
+        Num(i64),
+        Plus,
+    }
+
+    fn tokens() -> impl Iterator<Item = (Tok, Counted)> {
+        [
+            (Tok::Num(1), Counted(1)),
+            (Tok::Plus, Counted(0)),
+            (Tok::Num(2), Counted(2)),
+            (Tok::Plus, Counted(0)),
+            (Tok::Num(3), Counted(3)),
+        ]
+        .into_iter()
+    }
+
+    mod no_reads {
+        use super::*;
+        use ferrolith::grammar;
+
+        grammar! {
+            #![parser_cfg(payload_merge = add, payload_merge_strategy = first_last)]
+
+            type Token = Tok;
+            type Payload = Counted;
+
+            #[left(Plus)]
+
+            #[start]
+            fn expr() -> i64 {
+                (Num(n))                   => n,
+                (l @ expr, Plus, r @ expr) => l + r,
+            }
+        }
+
+        #[test]
+        fn never_clones() {
+            CLONES.with(|c| c.set(0));
+            assert_eq!(parse(tokens()).unwrap(), 6);
+            assert_eq!(CLONES.with(Cell::get), 0);
+        }
+    }
+
+    mod reads_first {
+        use super::*;
+        use ferrolith::grammar;
+
+        grammar! {
+            #![parser_cfg(payload_merge = add, payload_merge_strategy = first_last)]
+
+            type Token = Tok;
+            type Payload = Counted;
+
+            #[left(Plus)]
+
+            #[start]
+            fn expr() -> i64 {
+                (Num(n))                   => n,
+                (l @ expr, Plus, r @ expr) => {
+                    let _first = _1_payload.0;
+                    l + r
+                }
+            }
+        }
+
+        #[test]
+        fn clones_once_per_reading_reduction() {
+            CLONES.with(|c| c.set(0));
+            assert_eq!(parse(tokens()).unwrap(), 6);
+            // Two `Plus` reductions, each cloning `_1_payload` once; `_3_payload` is moved.
+            assert_eq!(CLONES.with(Cell::get), 2);
+        }
+    }
+}
