@@ -69,6 +69,32 @@
 //! requires your token type to implement any trait — it only needs to appear
 //! as `impl Iterator<Item = YourEnum>` when you call `parse`.
 //!
+//! The right-hand side can be any enum type, including a module path
+//! (`lexer::Tok`) or a generic instantiation (`Tok<i64>`):
+//!
+//! ```rust
+//! # use ferrolith::grammar;
+//! enum Tok<T> { Num(T), Plus }
+//!
+//! grammar! {
+//!     type Token = Tok<i64>;
+//! #   #[left(Plus)]
+//! #   #[start]
+//! #   fn expr() -> i64 {
+//! #       (Num(n)) => n,
+//! #       (l @ expr, Plus, r @ expr) => l + r,
+//! #   }
+//!     // ...
+//! }
+//! # fn main() {
+//! # assert_eq!(parse([Tok::Num(1), Tok::Plus, Tok::Num(2)].into_iter()).unwrap(), 3);
+//! # }
+//! ```
+//!
+//! Lifetime parameters other than `'static` are not supported: `type Token = Tok<'a>;`
+//! fails with "use of undeclared lifetime name". Use owned data in your tokens (e.g.
+//! `String` instead of `&'a str`), or `Tok<'static>` if your input is `'static`.
+//!
 //! ### Referring to tokens in rules
 //!
 //! Inside rule alternatives, token variants are written in **PascalCase** (matching

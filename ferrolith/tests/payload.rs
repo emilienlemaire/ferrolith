@@ -410,3 +410,44 @@ mod generic_payload {
         assert_eq!(p, Some(3));
     }
 }
+
+// Regression: generic token type combined with a payload, which goes through the
+// `(Token, Payload)` code paths of `parse` and `feed`.
+mod generic_token {
+    use ferrolith::grammar;
+
+    enum Tok<T> {
+        Num(T),
+        Plus,
+    }
+
+    grammar! {
+        #![parser_cfg(payload_merge_strategy = first)]
+
+        type Token = Tok<i64>;
+        type Payload = u32;
+
+        #[left(Plus)]
+
+        #[start]
+        fn expr() -> (i64, u32) {
+            (Num(n)) => (n, _1_payload),
+            (l @ expr, Plus, r @ expr) => (l.0 + r.0, _payload),
+        }
+    }
+
+    #[test]
+    fn parses_with_generic_token() {
+        let tokens = [(Tok::Num(1), 10u32), (Tok::Plus, 20), (Tok::Num(2), 30)];
+        assert_eq!(parse(tokens.into_iter()).unwrap(), (3, 10));
+    }
+
+    #[test]
+    fn feed_with_generic_token() {
+        let Checkpoint::InputNeeded(s) = start() else { panic!("expected InputNeeded") };
+        let Checkpoint::InputNeeded(s) = feed(s, Some((Tok::Num(5), 7))) else {
+            panic!("expected InputNeeded after token")
+        };
+        assert!(matches!(feed(s, None), Checkpoint::Accepted((5, 7))));
+    }
+}

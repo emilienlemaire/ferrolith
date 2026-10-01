@@ -75,8 +75,13 @@ pub fn grammar(input: TokenStream) -> TokenStream {
         .expose_automaton
         .then(|| gen_automaton_view(&internal_grammar, n_states, &incoming));
 
+    let tokens_type = &grammar.tokens_type;
+
     quote! {
         #(#warnings)*
+
+        #[allow(non_camel_case_types)]
+        type __UserToken = #tokens_type;
 
         #value_enum
 
@@ -260,8 +265,6 @@ fn gen_token_enum(
     internal_grammar: &InternalGrammar,
     error_terminal_id: Option<usize>,
 ) -> proc_macro2::TokenStream {
-    let token_ty = &grammar.tokens_type;
-
     let captures = collect_capture_terminals(grammar);
 
     let tokens_arms: Vec<_> = internal_grammar
@@ -272,16 +275,16 @@ fn gen_token_enum(
         .filter(|(id, _)| Some(*id) != error_terminal_id)
         .map(|(id, ident)| {
             if captures.contains(ident) {
-                quote! { #token_ty::#ident(..) => #id, }
+                quote! { __UserToken::#ident(..) => #id, }
             } else {
-                quote! { #token_ty::#ident => #id, }
+                quote! { __UserToken::#ident => #id, }
             }
         })
         .collect();
 
     quote! {
         enum __Token {
-            Real(#token_ty),
+            Real(__UserToken),
             Eof,
         }
 
@@ -297,7 +300,7 @@ fn gen_token_enum(
             }
         }
 
-        fn __token_id_opt(token: Option<&#token_ty>) -> usize {
+        fn __token_id_opt(token: Option<&__UserToken>) -> usize {
             match token {
                 None => 0,
                 Some(t) => match t {
@@ -579,8 +582,6 @@ fn gen_reduce_function(
 ) -> proc_macro2::TokenStream {
     let mut prod_code = vec![];
 
-    let tokens_type = &grammar.tokens_type;
-
     for (prod_id, production) in internal_grammar.productions.iter().enumerate() {
         if let Some(action_id) = production.action {
             let (rule_ident, arm_idx) = &internal_grammar.actions_order[action_id];
@@ -625,7 +626,7 @@ fn gen_reduce_function(
                         if let GrammarSymbol::Capture { variant, fields } = sym.as_ref() {
                             quote! {
                                 let (#(#fields),*) = match #vN {
-                                    __Value::T_Token(#tokens_type::#variant(#(#fields),*)) => (#(#fields),*),
+                                    __Value::T_Token(__UserToken::#variant(#(#fields),*)) => (#(#fields),*),
                                     _ => unreachable!(),
                                 };
                             }
@@ -683,7 +684,7 @@ fn gen_reduce_function(
                     GrammarSymbol::Capture { variant, fields } => {
                         quote! {
                             let (#(#fields),*) = match #vN {
-                                __Value::T_Token(#tokens_type::#variant(#(#fields),*)) => (#(#fields),*),
+                                __Value::T_Token(__UserToken::#variant(#(#fields),*)) => (#(#fields),*),
                                 _ => unreachable!(),
                             };
                         }

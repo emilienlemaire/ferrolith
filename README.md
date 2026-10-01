@@ -71,6 +71,8 @@ grammar! {
 
 Token variants are matched in PascalCase. Unit variants (`Plus`) discard the token; tuple variants (`Num(n)`) bind the inner fields.
 
+The token type can be any enum, including a path (`lexer::Tok`) or a generic instantiation (`Tok<i64>`). Lifetime parameters other than `'static` are not supported, so tokens should own their data.
+
 ### Rules
 
 ```rust,ignore
