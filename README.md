@@ -62,7 +62,7 @@ Then write a `grammar!` block anywhere in your code. The block generates `parse`
 
 ### Token type
 
-```rust
+```rust,ignore
 grammar! {
     type Token = MyToken;
     // ...
@@ -73,7 +73,7 @@ Token variants are matched in PascalCase. Unit variants (`Plus`) discard the tok
 
 ### Rules
 
-```rust
+```rust,ignore
 fn expr() -> i64 {
     (Num(n))                   => n,
     (l @ expr, Plus, r @ expr) => l + r,
@@ -84,7 +84,7 @@ fn expr() -> i64 {
 
 ### Precedence
 
-```rust
+```rust,ignore
 #[left(Plus, Minus)]  // lowest
 #[left(Star, Slash)]  // higher
 #[right(Caret)]       // highest, right-associative
@@ -106,7 +106,7 @@ Declarations go before the first rule in the `grammar!` block. They resolve shif
 
 Attach a type to each token (source spans are the common case) and have it propagated through reductions automatically:
 
-```rust
+```rust,ignore
 grammar! {
     #![parser_cfg(payload_merge = merge_span, payload_merge_strategy = first_last)]
 
@@ -121,11 +121,13 @@ grammar! {
 }
 ```
 
+The payload type must implement `Copy`, and `Default` unless you provide a fallback with `payload_default = expr` in `parser_cfg`.
+
 `_k_payload` holds the payload of the k-th RHS symbol. `_payload` is the merged payload for the current production, which your action can also override before returning.
 
 ### Error recovery
 
-```rust
+```rust,ignore
 fn stmt() -> Option<Stmt> {
     (s @ expr, Semi) => Some(s),
     (error, Semi)    => None,  // discard bad tokens up to the next semicolon
@@ -136,20 +138,21 @@ fn stmt() -> Option<Stmt> {
 
 ### Incremental API
 
-```rust
+```rust,ignore
+let mut tokens = token_stream.into_iter();
 let mut cp = start();
 
-for token in token_stream {
+let result = loop {
     cp = match cp {
-        Checkpoint::InputNeeded(state) => feed(state, Some(token)),
-        other => break,
-    };
-}
+        Checkpoint::InputNeeded(state) => feed(state, tokens.next()),
+        done => break done,
+    }
+};
 
-match feed(cp_state, None) {
-    Checkpoint::Accepted(value) => println!("{value:?}"),
-    Checkpoint::Rejected(_, err) => eprintln!("{err}"),
-    Checkpoint::InputNeeded(_) => eprintln!("unexpected end of input"),
+match result {
+    Checkpoint::Accepted(value) => println!("ok: {value:?}"),
+    Checkpoint::Rejected(_, err) => eprintln!("error: {err:?}"),
+    Checkpoint::InputNeeded(_) => unreachable!(),
 }
 ```
 

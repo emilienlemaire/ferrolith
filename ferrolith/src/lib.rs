@@ -98,15 +98,52 @@
 //! }
 //! ```
 //!
+//! The payload type must implement [`Copy`], since the generated actions read
+//! payload bindings more than once. It must also implement [`Default`] unless you
+//! set `payload_default` in `#![parser_cfg(...)]` (see
+//! [Default payload for epsilon rules](#default-payload-for-epsilon-rules)): the
+//! generated parser falls back to it whenever a payload is missing.
+//!
 //! When a payload type is declared, `parse` and the incremental `feed` function
 //! expect `(Token, Payload)` pairs instead of bare tokens:
 //!
-//! ```rust,ignore
+//! ```rust
+//! # use ferrolith::grammar;
+//! # #[derive(Debug, Clone, Copy, Default)]
+//! # struct Span { start: usize, end: usize }
+//! # fn merge_span(a: Span, b: Span) -> Span { Span { start: a.start, end: b.end } }
+//! # enum MyToken { Num(i64) }
+//! # struct Lexed { kind: MyToken, span: Span }
+//! # mod plain {
+//! #   use super::*;
+//! #   grammar! {
+//! #       type Token = MyToken;
+//! #       #[start]
+//! #       fn expr() -> i64 { (Num(n)) => n, }
+//! #   }
+//! #   pub fn run(tokens: Vec<Lexed>) -> Result<i64, ferrolith::ParseError<MyToken>> {
+//! #   let tokens = tokens.into_iter();
 //! // Without payload:
 //! parse(tokens.map(|t| t.kind))
+//! #   }
+//! # }
 //!
+//! # mod with_payload {
+//! #   use super::*;
+//! #   grammar! {
+//! #       #![parser_cfg(payload_merge = merge_span)]
+//! #       type Token = MyToken;
+//! #       type Payload = Span;
+//! #       #[start]
+//! #       fn expr() -> i64 { (Num(n)) => n, }
+//! #   }
+//! #   pub fn run(tokens: Vec<Lexed>) -> Result<i64, ferrolith::ParseError<(MyToken, Span)>> {
+//! #   let tokens = tokens.into_iter();
 //! // With payload:
 //! parse(tokens.map(|t| (t.kind, t.span)))
+//! #   }
+//! # }
+//! # fn main() {}
 //! ```
 //!
 //! ### Accessing payloads in actions
@@ -114,13 +151,29 @@
 //! Inside an action expression, every symbol at position *k* (1-indexed from the
 //! left) exposes a `_k_payload` binding containing that symbol's payload:
 //!
-//! ```rust,ignore
+//! ```rust
+//! # use ferrolith::grammar;
+//! # #[derive(Debug, Clone, Copy, Default)]
+//! # struct Span { start: usize, end: usize }
+//! # impl Span {
+//! #   fn merge(a: Span, b: Span) -> Span { Span { start: a.start, end: b.end } }
+//! # }
+//! # enum MyToken { Num(i64), Plus }
+//! # enum Expr { Num(i64, Span), Add(Box<Expr>, Box<Expr>, Span) }
+//! # grammar! {
+//! #   #![parser_cfg(payload_merge = Span::merge)]
+//! #   type Token = MyToken;
+//! #   type Payload = Span;
+//! #   #[left(Plus)]
+//! #   #[start]
 //! fn expr() -> Expr {
 //!     (Num(n)) => Expr::Num(n, _1_payload),
 //!     (l @ expr, Plus, r @ expr) => {
 //!         Expr::Add(Box::new(l), Box::new(r), Span::merge(_1_payload, _3_payload))
 //!     }
 //! }
+//! # }
+//! # fn main() {}
 //! ```
 //!
 //! Nonterminal symbols (like `l @ expr`) carry the payload that was propagated
@@ -141,7 +194,11 @@
 //!
 //! Provide the merge function via `payload_merge = path`:
 //!
-//! ```rust,ignore
+//! ```rust
+//! # use ferrolith::grammar;
+//! # #[derive(Debug, Clone, Copy, Default)]
+//! # struct Span { start: usize, end: usize }
+//! # enum MyToken { Num(i64), Plus }
 //! fn merge_span(a: Span, b: Span) -> Span {
 //!     Span { start: a.start, end: b.end }
 //! }
@@ -152,7 +209,14 @@
 //!     type Token   = MyToken;
 //!     type Payload = Span;
 //!     // ...
+//! #   #[left(Plus)]
+//! #   #[start]
+//! #   fn expr() -> i64 {
+//! #       (Num(n)) => n,
+//! #       (l @ expr, Plus, r @ expr) => l + r,
+//! #   }
 //! }
+//! # fn main() {}
 //! ```
 //!
 //! Rules with a single RHS symbol always propagate that symbol's payload directly,
@@ -164,13 +228,30 @@
 //! the merge strategy would have produced. The parent rule will then see this value
 //! in its `_k_payload` binding for this nonterminal:
 //!
-//! ```rust,ignore
+//! ```rust
+//! # use ferrolith::grammar;
+//! # #[derive(Debug, Clone, Copy, Default)]
+//! # struct Span { start: usize, end: usize }
+//! # impl Span {
+//! #   fn merge(a: Span, b: Span) -> Span { Span { start: a.start, end: b.end } }
+//! # }
+//! # enum MyToken { Num(i64), Plus }
+//! # enum Expr { Num(i64), Add(Box<Expr>, Box<Expr>) }
+//! # grammar! {
+//! #   #![parser_cfg(payload_merge = Span::merge)]
+//! #   type Token = MyToken;
+//! #   type Payload = Span;
+//! #   #[left(Plus)]
+//! #   #[start]
 //! fn expr() -> Expr {
+//! #   (Num(n)) => Expr::Num(n),
 //!     (l @ expr, Plus, r @ expr) => {
 //!         _payload = Span::merge(_1_payload, _3_payload);
 //!         Expr::Add(Box::new(l), Box::new(r))
 //!     }
 //! }
+//! # }
+//! # fn main() {}
 //! ```
 //!
 //! ### Default payload for epsilon rules
@@ -178,7 +259,14 @@
 //! Epsilon alternatives (empty symbol list) cannot derive a payload from RHS symbols.
 //! They use `payload_default` from `parser_cfg` if set, otherwise `Payload::default()`.
 //!
-//! ```rust,ignore
+//! ```rust
+//! # use ferrolith::grammar;
+//! # #[derive(Debug, Clone, Copy, Default)]
+//! # struct Span { start: usize, end: usize }
+//! # impl Span { const DUMMY: Span = Span { start: 0, end: 0 }; }
+//! # fn merge_span(a: Span, b: Span) -> Span { Span { start: a.start, end: b.end } }
+//! # enum MyToken { Num(i64) }
+//! # enum Expr { Num(i64) }
 //! grammar! {
 //!     #![parser_cfg(payload_merge = merge_span, payload_merge_strategy = first_last,
 //!                   payload_default = Span::DUMMY)]
@@ -191,7 +279,10 @@
 //!         ()                              => vec![],   // _payload = Span::DUMMY
 //!         (mut xs @ items, e @ expr) => { xs.push(e); xs }
 //!     }
+//! #
+//! #   fn expr() -> Expr { (Num(n)) => Expr::Num(n), }
 //! }
+//! # fn main() {}
 //! ```
 //!
 //! ---
@@ -200,7 +291,7 @@
 //!
 //! Each rule is a Rust-like function with one or more alternatives:
 //!
-//! ```rust,ignore
+//! ```text
 //! fn rule_name() -> ReturnType {
 //!     (symbol, symbol, ...) => action_expression,
 //!     (symbol, symbol, ...) => action_expression,
@@ -231,11 +322,19 @@
 //!
 //! Use `name @ symbol` to bind the value produced by `symbol` to `name`:
 //!
-//! ```rust,ignore
+//! ```rust
+//! # use ferrolith::grammar;
+//! # enum Token { Num(i64), Plus }
+//! # grammar! {
+//! #   type Token = Token;
+//! #   #[left(Plus)]
+//! #   #[start]
 //! fn expr() -> i64 {
 //!     (Num(n))                   => n,
 //!     (l @ expr, Plus, r @ expr) => l + r,
 //! }
+//! # }
+//! # fn main() {}
 //! ```
 //!
 //! `l @ expr` runs the `expr` rule and binds its `i64` result to `l`.
@@ -243,8 +342,18 @@
 //!
 //! You can also write `mut name @ symbol` to get a mutable binding:
 //!
-//! ```rust,ignore
+//! ```rust
+//! # use ferrolith::grammar;
+//! # enum Token { Num(i64) }
+//! # grammar! {
+//! #   type Token = Token;
+//! #   #[start]
+//! #   fn items() -> Vec<i64> {
 //! (mut xs @ star(item), v @ item) => { xs.push(v); xs }
+//! #   }
+//! #   fn item() -> i64 { (Num(n)) => n, }
+//! # }
+//! # fn main() {}
 //! ```
 //!
 //! ### Positional bindings
@@ -252,16 +361,36 @@
 //! Every symbol at position *k* (1-indexed from left) is also accessible as `_k`,
 //! whether or not it has a named binding:
 //!
-//! ```rust,ignore
+//! ```rust
+//! # use ferrolith::grammar;
+//! # enum Token { Num(i64), Plus }
+//! # grammar! {
+//! #   type Token = Token;
+//! #   #[left(Plus)]
+//! #   #[start]
 //! fn expr() -> i64 {
+//! #   (Num(n)) => n,
 //!     (expr, Plus, expr) => _1 + _3, // _2 would be the Plus token itself
 //! }
+//! # }
+//! # fn main() {}
 //! ```
 //!
 //! Named and positional bindings can be mixed freely:
 //!
-//! ```rust,ignore
+//! ```rust
+//! # use ferrolith::grammar;
+//! # enum Token { Num(i64), Plus }
+//! # grammar! {
+//! #   type Token = Token;
+//! #   #[left(Plus)]
+//! #   #[start]
+//! #   fn expr() -> i64 {
+//! #       (Num(n)) => n,
 //! (l @ expr, Plus, expr) => l + _3,
+//! #   }
+//! # }
+//! # fn main() {}
 //! ```
 //!
 //! Positional bindings of non-Copy types follow move semantics. If you use both
@@ -319,10 +448,25 @@
 //! Declare operator precedence with `#[left]`, `#[right]`, or `#[nonassoc]`
 //! attributes **before any rule**, listing tokens from **lowest to highest** precedence:
 //!
-//! ```rust,ignore
+//! ```rust
+//! # use ferrolith::grammar;
+//! # enum Token { Num(i64), Plus, Minus, Star, Slash, Caret }
+//! # grammar! {
+//! #   type Token = Token;
 //! #[left(Plus, Minus)]   // lowest precedence
 //! #[left(Star, Slash)]   // higher
 //! #[right(Caret)]        // highest, right-associative
+//! #   #[start]
+//! #   fn expr() -> i64 {
+//! #       (Num(n)) => n,
+//! #       (l @ expr, Plus, r @ expr) => l + r,
+//! #       (l @ expr, Minus, r @ expr) => l - r,
+//! #       (l @ expr, Star, r @ expr) => l * r,
+//! #       (l @ expr, Slash, r @ expr) => l / r,
+//! #       (l @ expr, Caret, r @ expr) => l.pow(r as u32),
+//! #   }
+//! # }
+//! # fn main() {}
 //! ```
 //!
 //! When an LR conflict arises between shifting a token and reducing a production,
@@ -341,7 +485,8 @@
 //! fn expr() -> Expr {
 //!     (Num(n))                   => Expr::Num(n),
 //!     (l @ expr, Plus, r @ expr) => Expr::Add(Box::new(l), Box::new(r)),
-//!     // Unary minus has no rightmost terminal, so we declare its precedence explicitly.
+//!     // `Minus` is the rightmost terminal, but unary minus must bind tighter than
+//!     // binary minus, so we override its precedence explicitly.
 //!     #[prec(UMinus)]
 //!     (Minus, e @ expr)          => Expr::Neg(Box::new(e)),
 //! }
@@ -414,12 +559,22 @@
 //! following the yacc/bison model. Add an `error` alternative to any rule to
 //! declare that rule a recovery point:
 //!
-//! ```rust,ignore
+//! ```rust
+//! # use ferrolith::grammar;
+//! # enum Token { Num(i64), Semi }
+//! # type Stmt = i64;
+//! # grammar! {
+//! #   type Token = Token;
+//! #   #[start]
+//! #   fn program() -> Vec<Option<Stmt>> { (xs @ star(stmt)) => xs, }
+//! #   fn expr() -> Stmt { (Num(n)) => n, }
 //! fn stmt() -> Option<Stmt> {
 //!     (s @ expr, Semi) => Some(s),
 //!     // If parsing `expr` fails, discard tokens until `Semi`, then continue.
 //!     (error, Semi)    => None,
 //! }
+//! # }
+//! # fn main() {}
 //! ```
 //!
 //! `error` is a reserved keyword in the grammar DSL; it cannot be used as a
@@ -461,7 +616,21 @@
 //! Both variants carry an `expected` field listing the names of the terminals that
 //! *would* have been valid at that point, which is useful for error messages:
 //!
-//! ```rust,ignore
+//! ```rust
+//! # use ferrolith::grammar;
+//! # #[derive(Debug)]
+//! # enum Token { Num(i64), Plus }
+//! # grammar! {
+//! #   type Token = Token;
+//! #   #[left(Plus)]
+//! #   #[start]
+//! #   fn expr() -> i64 {
+//! #       (Num(n)) => n,
+//! #       (l @ expr, Plus, r @ expr) => l + r,
+//! #   }
+//! # }
+//! # fn main() {
+//! # let tokens = vec![Token::Num(1), Token::Plus].into_iter();
 //! // Without payload:
 //! match parse(tokens) {
 //!     Ok(value) => println!("parsed: {:?}", value),
@@ -472,14 +641,38 @@
 //!         eprintln!("unexpected end of input, expected one of: {}", expected.join(", "));
 //!     }
 //! }
+//! # }
+//! ```
 //!
+//! ```rust
+//! # use ferrolith::grammar;
+//! # #[derive(Debug, Clone, Copy, Default)]
+//! # struct Span { start: usize, end: usize }
+//! # fn merge_span(a: Span, b: Span) -> Span { Span { start: a.start, end: b.end } }
+//! # #[derive(Debug)]
+//! # enum Token { Num(i64), Plus }
+//! # grammar! {
+//! #   #![parser_cfg(payload_merge = merge_span)]
+//! #   type Token = Token;
+//! #   type Payload = Span;
+//! #   #[left(Plus)]
+//! #   #[start]
+//! #   fn expr() -> i64 {
+//! #       (Num(n)) => n,
+//! #       (l @ expr, Plus, r @ expr) => l + r,
+//! #   }
+//! # }
+//! # fn main() {
+//! # let tokens = vec![(Token::Plus, Span { start: 0, end: 1 })].into_iter();
 //! // With payload:
 //! match parse(tokens) {
 //!     Err(ferrolith::ParseError::UnexpectedToken { token: (tok, span), expected }) => {
 //!         eprintln!("at {:?}: unexpected {:?}, expected one of: {}", span, tok, expected.join(", "));
 //!     }
 //!     // ...
+//! #   _ => {}
 //! }
+//! # }
 //! ```
 //!
 //! `ParseError` implements `Display` (when `T: Display`) and `Error`.
@@ -493,36 +686,65 @@
 //! steps. This is useful for interactive tools, speculative parsing, or error
 //! recovery scaffolding.
 //!
-//! ```rust,ignore
-//! // Start a fresh parse.
+//! ```rust
+//! # use ferrolith::grammar;
+//! # #[derive(Debug)]
+//! # enum Token { Num(i64), Plus, Star }
+//! # grammar! {
+//! #   type Token = Token;
+//! #   #[left(Plus)]
+//! #   #[left(Star)]
+//! #   #[start]
+//! #   fn expr() -> i64 {
+//! #       (Num(n)) => n,
+//! #       (l @ expr, Plus, r @ expr) => l + r,
+//! #       (l @ expr, Star, r @ expr) => l * r,
+//! #   }
+//! # }
+//! # fn main() {
+//! # let token_stream = vec![Token::Num(1), Token::Plus, Token::Num(2)];
+//! let mut tokens = token_stream.into_iter();
 //! let mut cp = start();
 //!
-//! for token in token_stream {
+//! // Feed tokens until the parser finishes. `token.next()` returns `None`
+//! // once the stream is exhausted, which signals the end of input.
+//! let result = loop {
 //!     cp = match cp {
-//!         Checkpoint::InputNeeded(state) => feed(state, Some(token)),
-//!         other => break,
+//!         Checkpoint::InputNeeded(state) => feed(state, tokens.next()),
+//!         done => break done,
 //!     };
-//! }
-//!
-//! // Signal end-of-input.
-//! let result = match cp {
-//!     Checkpoint::InputNeeded(state) => feed(state, None),
-//!     other => other,
 //! };
 //!
 //! match result {
-//!     Checkpoint::Accepted(value)  => println!("ok: {:?}", value),
-//!     Checkpoint::Rejected(_, err) => eprintln!("error: {}", err),
-//!     Checkpoint::InputNeeded(_)   => eprintln!("unexpected end of input"),
+//!     Checkpoint::Accepted(value) => println!("ok: {value:?}"),
+//!     Checkpoint::Rejected(_, err) => eprintln!("error: {err:?}"),
+//!     Checkpoint::InputNeeded(_) => unreachable!(),
 //! }
+//! # }
 //! ```
 //!
 //! When a [payload type](#token-payload) is declared, `feed` accepts
 //! `Option<(Token, Payload)>` and `Checkpoint::Rejected` carries
 //! `ParseError<(Token, Payload)>`:
 //!
-//! ```rust,ignore
+//! ```rust
+//! # use ferrolith::grammar;
+//! # #[derive(Debug, Clone, Copy, Default)]
+//! # struct Span { start: usize, end: usize }
+//! # fn merge_span(a: Span, b: Span) -> Span { Span { start: a.start, end: b.end } }
+//! # enum Token { Num(i64) }
+//! # grammar! {
+//! #   #![parser_cfg(payload_merge = merge_span)]
+//! #   type Token = Token;
+//! #   type Payload = Span;
+//! #   #[start]
+//! #   fn expr() -> i64 { (Num(n)) => n, }
+//! # }
+//! # fn main() {
+//! # let Checkpoint::InputNeeded(state) = start() else { unreachable!() };
+//! # let (my_token, my_span) = (Token::Num(1), Span { start: 0, end: 1 });
 //! let cp = feed(state, Some((my_token, my_span)));
+//! # }
 //! ```
 //!
 //! ### `ParserState`
@@ -538,15 +760,29 @@
 //! Add `#![parser_cfg(clonable_state)]` to make `ParserState` implement `Clone`.
 //! You can then fork the parser before feeding a token to explore multiple paths:
 //!
-//! ```rust,ignore
+//! ```rust
+//! # use ferrolith::grammar;
+//! # #[derive(Clone)]
+//! # enum Token { Num(i64), Plus }
 //! grammar! {
 //!     #![parser_cfg(clonable_state)]
 //!     // ...
+//! #   type Token = Token;
+//! #   #[left(Plus)]
+//! #   #[start]
+//! #   fn expr() -> i64 {
+//! #       (Num(n)) => n,
+//! #       (l @ expr, Plus, r @ expr) => l + r,
+//! #   }
 //! }
 //!
+//! # fn main() {
+//! # let Checkpoint::InputNeeded(state) = start() else { unreachable!() };
+//! # let (token_a, token_b) = (Token::Num(1), Token::Plus);
 //! let fork = state.clone();
 //! let path_a = feed(state, Some(token_a));
 //! let path_b = feed(fork,  Some(token_b));
+//! # }
 //! ```
 //!
 //! Requires that all types returned by grammar rules implement `Clone`.
@@ -557,12 +793,23 @@
 //!
 //! Add `#![parser_cfg(expose_automaton)]` to expose the compiled LR automaton:
 //!
-//! ```rust,ignore
+//! ```rust
+//! # use ferrolith::grammar;
+//! # enum Token { Num(i64), Plus }
 //! grammar! {
 //!     #![parser_cfg(expose_automaton)]
 //!     // ...
+//! #   type Token = Token;
+//! #   #[left(Plus)]
+//! #   #[start]
+//! #   fn expr() -> i64 {
+//! #       (Num(n)) => n,
+//! #       (l @ expr, Plus, r @ expr) => l + r,
+//! #   }
 //! }
 //!
+//! # fn main() {
+//! # let (state_id, terminal_id, nonterminal_id) = (0, 1, 1);
 //! // A static view of the whole automaton:
 //! let view: &ferrolith::AutomatonView = &AUTOMATON;
 //! println!("{} states", view.n_states);
@@ -570,9 +817,15 @@
 //! // Direct table lookups, useful for tooling or visualisation:
 //! let act = action(state_id, terminal_id);
 //! let dst = goto(state_id, nonterminal_id);
+//! # }
 //! ```
 //!
 //! See [`AutomatonView`] for the full API.
+
+// Compiles the README's Rust examples as doctests. Only exists under `cargo test --doc`.
+#[cfg(doctest)]
+#[doc = include_str!("../../README.md")]
+struct ReadmeDoctests;
 
 pub use ferrolith_macro::grammar;
 

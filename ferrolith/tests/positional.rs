@@ -117,15 +117,16 @@ mod bound_copy_positional {
 
         #[start]
         fn expr() -> i64 {
-            (Num(n))                   => n,
-            (l @ expr, Plus, r @ expr) => _1 + r,
+            (Num(n))                    => n,
+            (_l @ expr, Plus, r @ expr) => _1 + r,
         }
     }
 
     #[test]
     fn positional_for_bound_copy_type() {
-        // _1 refers to `l @ expr` at position 1; i64 is Copy so _1 is still
-        // available after `let l = _1` copies rather than moves it.
+        // _1 refers to `_l @ expr` at position 1; i64 is Copy so _1 is still
+        // available after `let _l = _1` copies rather than moves it. (The `_`
+        // prefix only silences the unused-variable warning; it is still bound.)
         assert_eq!(
             parse([Tok::Num(4), Tok::Plus, Tok::Num(6)].into_iter()).unwrap(),
             10

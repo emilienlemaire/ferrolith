@@ -1,0 +1,5 @@
+error: Only `Token` and `Payload` type aliases are allowed in the `grammar!` macro.
+ --> tests/macro/fail/unknown_type_alias.rs:9:10
+  |
+9 |     type Output = i64;
+  |          ^^^^^^

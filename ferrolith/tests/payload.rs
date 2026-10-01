@@ -335,3 +335,78 @@ mod incremental_payload {
         }
     }
 }
+
+// Regression: payload types that are not plain paths must expand to valid code
+// (the default fallback is generated as `<T>::default()`, not `T::default()`).
+mod tuple_payload {
+    use ferrolith::grammar;
+
+    enum Tok {
+        Num(i64),
+    }
+
+    grammar! {
+        #![parser_cfg(payload_merge_strategy = first)]
+
+        type Token = Tok;
+        type Payload = (u32, u32);
+
+        #[start]
+        fn values() -> (Vec<i64>, (u32, u32)) {
+            (xs @ star(value)) => (xs, _payload),
+        }
+
+        fn value() -> i64 {
+            (Num(n)) => n,
+        }
+    }
+
+    #[test]
+    fn epsilon_uses_default_tuple() {
+        let (xs, p) = parse(std::iter::empty()).unwrap();
+        assert!(xs.is_empty());
+        assert_eq!(p, (0, 0));
+    }
+
+    #[test]
+    fn tuple_payload_propagates() {
+        let (xs, _) = parse([(Tok::Num(1), (0, 1)), (Tok::Num(2), (2, 3))].into_iter()).unwrap();
+        assert_eq!(xs, vec![1, 2]);
+    }
+}
+
+mod generic_payload {
+    use ferrolith::grammar;
+
+    enum Tok {
+        Num(i64),
+        Plus,
+    }
+
+    fn first_some(a: Option<u32>, b: Option<u32>) -> Option<u32> {
+        a.or(b)
+    }
+
+    grammar! {
+        #![parser_cfg(payload_merge = first_some, payload_merge_strategy = first_last)]
+
+        type Token = Tok;
+        type Payload = Option<u32>;
+
+        #[left(Plus)]
+
+        #[start]
+        fn expr() -> (i64, Option<u32>) {
+            (Num(n)) => (n, _1_payload),
+            (l @ expr, Plus, r @ expr) => (l.0 + r.0, _payload),
+        }
+    }
+
+    #[test]
+    fn generic_payload_is_merged() {
+        let tokens = [(Tok::Num(1), None), (Tok::Plus, Some(2)), (Tok::Num(2), Some(3))];
+        let (v, p) = parse(tokens.into_iter()).unwrap();
+        assert_eq!(v, 3);
+        assert_eq!(p, Some(3));
+    }
+}
