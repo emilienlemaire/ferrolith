@@ -170,3 +170,180 @@ mod no_error_productions {
         assert!(parse([Tok::Num(1)].into_iter()).is_err());
     }
 }
+
+mod payload_after_recovery {
+    // The `error` pseudo-token takes the payload of the token that triggered
+    // recovery, keeping the payload stack aligned with the value stack.
+    // `payload_default = 99` makes default fallbacks distinguishable from positions.
+    use ferrolith::grammar;
+
+    enum Tok {
+        Num(i64),
+        Plus,
+        Semi,
+    }
+
+    grammar! {
+        #![parser_cfg(payload_merge_strategy = first, payload_default = 99)]
+
+        type Token = Tok;
+        type Payload = u32;
+
+        #[left(Plus)]
+
+        #[start]
+        fn stmts() -> Vec<(Option<i64>, u32)> {
+            () => vec![],
+            (mut ss @ stmts, s @ stmt) => { ss.push(s); ss },
+        }
+
+        fn stmt() -> (Option<i64>, u32) {
+            (v @ expr, Semi) => (Some(v), _payload),
+            (error, Semi)    => (None, _payload),
+        }
+
+        fn expr() -> i64 {
+            (Num(n))                   => n,
+            (l @ expr, Plus, r @ expr) => l + r,
+        }
+    }
+
+    #[test]
+    fn error_takes_offending_token_payload() {
+        let tokens = [
+            (Tok::Num(1), 10u32),
+            (Tok::Semi, 11),
+            (Tok::Plus, 20),
+            (Tok::Semi, 21),
+            (Tok::Num(3), 30),
+            (Tok::Semi, 31),
+        ];
+        assert_eq!(
+            parse(tokens.into_iter()).unwrap(),
+            vec![(Some(1), 10), (None, 20), (Some(3), 30)]
+        );
+    }
+
+    // pop_count > 0: `expr Plus` is popped before `error` is shifted.
+    #[test]
+    fn recovery_after_partial_parse() {
+        let tokens = [
+            (Tok::Num(1), 10u32),
+            (Tok::Plus, 11),
+            (Tok::Plus, 12),
+            (Tok::Semi, 13),
+        ];
+        assert_eq!(parse(tokens.into_iter()).unwrap(), vec![(None, 12)]);
+    }
+
+    // The offending token is the sync token itself: it is not discarded,
+    // so its payload is cloned for `error` and shifted again with `Semi`.
+    #[test]
+    fn offending_token_is_sync_token() {
+        let tokens = [(Tok::Num(1), 10u32), (Tok::Plus, 11), (Tok::Semi, 12)];
+        assert_eq!(parse(tokens.into_iter()).unwrap(), vec![(None, 12)]);
+    }
+}
+
+mod payload_recovery_at_eof {
+    // Recovery triggered at end of input has no token to take a payload from,
+    // so `error` falls back to `payload_default`.
+    use ferrolith::grammar;
+
+    enum Tok {
+        Num(i64),
+        Plus,
+    }
+
+    grammar! {
+        #![parser_cfg(payload_merge_strategy = first, payload_default = 99)]
+
+        type Token = Tok;
+        type Payload = u32;
+
+        #[start]
+        fn top() -> u32 {
+            (Num(_n), Plus) => _payload,
+            (error)         => _payload,
+        }
+    }
+
+    #[test]
+    fn clean_input() {
+        assert_eq!(parse([(Tok::Num(1), 3u32), (Tok::Plus, 4)].into_iter()).unwrap(), 3);
+    }
+
+    #[test]
+    fn offending_token_payload() {
+        assert_eq!(parse([(Tok::Plus, 5u32)].into_iter()).unwrap(), 5);
+    }
+
+    #[test]
+    fn eof_uses_payload_default() {
+        assert_eq!(parse(std::iter::empty()).unwrap(), 99);
+    }
+}
+
+mod trailing_error {
+    // `error` ends its rule, so the state after shifting it only reduces
+    // (`stmt → error •`). That reduction is a default reduction, stripped from
+    // the packed action table: recovery must simulate it to see that `Semi`
+    // can follow, instead of discarding every remaining token.
+    use ferrolith::grammar;
+
+    #[derive(Debug)]
+    enum Tok {
+        Num(i64),
+        Semi,
+    }
+
+    grammar! {
+        type Token = Tok;
+
+        #[start]
+        fn stmts() -> Vec<Option<i64>> {
+            () => vec![],
+            (mut ss @ stmts, s @ stmt, Semi) => { ss.push(s); ss },
+        }
+
+        fn stmt() -> Option<i64> {
+            (Num(n)) => Some(n),
+            (error)  => None,
+        }
+    }
+
+    #[test]
+    fn junk_between_separators() {
+        // `Num(3)` fails where `Semi` is expected; `stmt` is popped, then the
+        // junk is discarded up to the next `Semi`.
+        let tokens = [
+            Tok::Num(1),
+            Tok::Semi,
+            Tok::Num(2),
+            Tok::Num(3),
+            Tok::Num(4),
+            Tok::Semi,
+            Tok::Num(5),
+            Tok::Semi,
+        ];
+        assert_eq!(
+            parse(tokens.into_iter()).unwrap(),
+            vec![Some(1), None, Some(5)]
+        );
+    }
+
+    #[test]
+    fn junk_at_end() {
+        let tokens = [Tok::Num(1), Tok::Semi, Tok::Num(2), Tok::Num(3), Tok::Semi];
+        assert_eq!(parse(tokens.into_iter()).unwrap(), vec![Some(1), None]);
+    }
+
+    #[test]
+    fn unrecoverable() {
+        let tokens = [Tok::Num(1), Tok::Semi, Tok::Num(2), Tok::Num(3)];
+        assert!(matches!(
+            parse(tokens.into_iter()),
+            Err(ferrolith::ParseError::UnexpectedEof { .. })
+        ));
+    }
+}

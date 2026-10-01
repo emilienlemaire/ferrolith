@@ -107,6 +107,14 @@ pub fn grammar(input: TokenStream) -> TokenStream {
     .into()
 }
 
+fn payload_default_expr(grammar: &Grammar) -> Option<proc_macro2::TokenStream> {
+    let ty = grammar.payload_type.as_ref()?;
+    Some(match grammar.cfg.payload_default {
+        Some(ref def) => quote! { #def },
+        None => quote! {<#ty>::default() },
+    })
+}
+
 fn gen_expected_tokens_fn(
     internal_grammar: &InternalGrammar,
     error_terminal_id: Option<usize>,
@@ -606,14 +614,9 @@ fn gen_reduce_function(
                 let assign = quote! { let #vN = value_stack.pop().unwrap(); };
                 let pos = format_ident!("_{}", rhs_len - idx);
                 let payload_pop = {
-                    if let Some(ref ty) = grammar.payload_type {
-                        let payload_default = if let Some(ref def) = grammar.cfg.payload_default {
-                            quote! { #def }
-                        } else {
-                            quote! { <#ty>::default() }
-                        };
+                    if grammar.payload_type.is_some() {
                         Some(quote! {
-                            let #payload_id = payload_stack.pop().unwrap_or_else(|| #payload_default );
+                            let #payload_id = payload_stack.pop().unwrap();
                         })
                     } else {
                         None
@@ -775,15 +778,11 @@ fn gen_reduce_function(
                         quote! { #id }
                     }
                 };
-                if let Some(ref ty) = grammar.payload_type {
+                if grammar.payload_type.is_some() {
                     if rhs_len == 0 {
-                        let payload_default = if let Some(ref def) = grammar.cfg.payload_default {
-                            quote! { #def }
-                        } else {
-                            quote! { <#ty>::default() }
-                        };
+                        let def = payload_default_expr(grammar).unwrap();
                         Some(quote! {
-                            _payload = #payload_default;
+                            _payload = #def;
                         })
                     } else if rhs_len == 1 {
                         let arg = payload_arg(1);
@@ -962,6 +961,16 @@ fn gen_parse_function(
         }
     };
 
+    let error_payload_push = payload_default_expr(grammar).map(|def| {
+        quote! {
+            let __error_payload = match token {
+                Some((_, ref p)) => p.clone(),
+                None => #def,
+            };
+            payload_stack.push(__error_payload);
+        }
+    });
+
     let payload_stack_trunc = if grammar.payload_type.is_some() {
         Some(quote! {
             payload_stack.truncate(new_len.saturating_sub(1));
@@ -997,15 +1006,15 @@ fn gen_parse_function(
 
                 state_stack.push(shift_target);
                 value_stack.push(__Value::T_Unit);
+                #error_payload_push
 
                 while
-                    let ::ferrolith::action::Action::Error = __action(shift_target, terminal_id)
-                    && terminal_id != 0 {
+                    !__can_consume(&state_stack, terminal_id) && terminal_id != 0 {
                         token = tokens.next();
                         terminal_id = #token_id_expr;
                 }
 
-                if let ::ferrolith::action::Action::Error = __action(shift_target, terminal_id) {
+                if !__can_consume(&state_stack, terminal_id) {
                     return Err(match token {
                         Some(t) => ::ferrolith::ParseError::UnexpectedToken {
                             token: t,
@@ -1248,9 +1257,10 @@ fn gen_incremental_api(
             /// The grammar was fully satisfied. The inner value is the result of
             /// the start rule's action expression.
             Accepted(#start_ret_type),
-            /// The parser encountered an error it could not recover from. The first
-            /// field is the parser state at the point of failure (preserved for
-            /// diagnostics); the second describes what went wrong.
+            /// The parser encountered an unexpected token or end of input. [`feed`]
+            /// does not perform error recovery, so this is returned at the first
+            /// error. The first field is the parser state at the point of failure
+            /// (preserved for diagnostics); the second describes what went wrong.
             Rejected(ParserState, ::ferrolith::ParseError<#checkpoint_err_ty>),
         }
     };
@@ -1443,12 +1453,35 @@ fn gen_incremental_api(
         }
     };
 
+    let can_consume_fn = quote! {
+        fn __can_consume(stack: &[usize], t: usize) -> bool {
+            let mut states = stack.to_vec();
+            loop {
+                let s = *states.last().unwrap();
+                let prod = match __action(s, t) {
+                    ::ferrolith::action::Action::Shift(_) | ::ferrolith::action::Action::Accept => return true,
+                    ::ferrolith::action::Action::Reduce(p) => p,
+                    ::ferrolith::action::Action::Error => match __DEFAULT_REDUCTIONS[s] {
+                        usize::MAX => return false,
+                        p => p,
+                    },
+                };
+                let (lhs, rhs_len) = __prod_info(prod);
+                states.truncate(states.len() - rhs_len);
+                states.push(__goto(*states.last().unwrap(), lhs));
+            }
+        }
+    };
+
     quote! {
         #types
 
         #start_fn
 
+
         #prod_info_fn
+
+        #can_consume_fn
 
         #feed_fn
     }

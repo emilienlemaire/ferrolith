@@ -127,7 +127,9 @@
 //! The payload type must implement [`Clone`]. It must also implement [`Default`]
 //! unless you set `payload_default` in `#![parser_cfg(...)]` (see
 //! [Default payload for epsilon rules](#default-payload-for-epsilon-rules)): the
-//! generated parser falls back to it whenever a payload is missing.
+//! generated parser uses it for epsilon alternatives, which have no symbols to take
+//! a payload from, and for an `error` token shifted at end of input (see
+//! [Error recovery](#error-recovery)).
 //!
 //! Payloads are moved, not cloned, wherever possible. A `_k_payload` is cloned
 //! only when your action reads it *and* the merge strategy also consumes it, so
@@ -293,6 +295,8 @@
 //!
 //! Epsilon alternatives (empty symbol list) cannot derive a payload from RHS symbols.
 //! They use `payload_default` from `parser_cfg` if set, otherwise `Payload::default()`.
+//! The same fallback gives the `error` pseudo-token its payload when recovery starts
+//! at end of input.
 //!
 //! ```rust
 //! # use ferrolith::grammar;
@@ -615,6 +619,19 @@
 //! `error` is a reserved keyword in the grammar DSL; it cannot be used as a
 //! binding name or rule name. It takes no binding and carries no value.
 //!
+//! `error` can also end an alternative, as in `(error) => None`. The tokens that
+//! may follow the rule then act as sync tokens: in a list such as
+//! `(mut ss @ stmts, s @ stmt, Semi)`, recovery inside `stmt` discards input up to
+//! the next `Semi`.
+//!
+//! With a [payload type](#token-payload), `error` does carry a payload: the payload
+//! of the token that triggered recovery, or the [default payload](#default-payload-for-epsilon-rules)
+//! when recovery starts at end of input. Read it as `_k_payload` like any other
+//! symbol, for instance to report where the error happened.
+//!
+//! Error recovery is only performed by `parse`. The [incremental API](#incremental-api)
+//! returns `Checkpoint::Rejected` at the first error.
+//!
 //! ### Recovery algorithm
 //!
 //! When the parser encounters an unexpected token it cannot shift or reduce on,
@@ -626,11 +643,13 @@
 //! 2. **Find a recovery state**: walk the state stack from top to bottom looking
 //!    for a state that can shift the `error` token. If none is found, the parse
 //!    fails immediately with a [`ParseError`].
-//! 3. **Truncate**: pop the state and value stacks back to the recovery state and
-//!    shift `error` into it.
+//! 3. **Truncate**: pop the state, value, and payload stacks back to the recovery
+//!    state and shift `error` into it.
 //! 4. **Discard tokens**: consume tokens from the input until one is found that
 //!    the parser can act on in the post-`error` state (the sync token, e.g. `Semi`
-//!    above). If EOF is reached with no valid sync token, the parse fails.
+//!    above), taking into account any reductions the parser would perform first
+//!    (such as reducing `stmt → error` before shifting `Semi`). If EOF is reached
+//!    with no valid sync token, the parse fails.
 //! 5. **Continue**: resume normal parsing from the post-`error` state.
 //!
 //! The `error` pseudo-token is filtered out of the `expected` field of
@@ -716,10 +735,11 @@
 //!
 //! ## Incremental API
 //!
-//! The generated `parse` function is a thin wrapper around a lower-level incremental
-//! API that lets you feed tokens one at a time and inspect the parser state between
-//! steps. This is useful for interactive tools, speculative parsing, or error
-//! recovery scaffolding.
+//! Alongside `parse`, the macro generates a lower-level incremental API that lets
+//! you feed tokens one at a time and inspect the parser state between steps. This
+//! is useful for interactive tools, speculative parsing, or building your own error
+//! handling. Unlike `parse`, `feed` does not perform [error recovery](#error-recovery):
+//! it returns `Checkpoint::Rejected` at the first unexpected token.
 //!
 //! ```rust
 //! # use ferrolith::grammar;
