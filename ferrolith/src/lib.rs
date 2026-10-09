@@ -731,8 +731,9 @@
 //! when recovery starts at end of input. Read it as `_k_payload` like any other
 //! symbol, for instance to report where the error happened.
 //!
-//! Error recovery is only performed by `parse`. The [incremental API](#incremental-api)
-//! returns `Checkpoint::Rejected` at the first error.
+//! `parse` and the [incremental API](#incremental-api) recover the same way. With
+//! `feed`, each discarded token returns `Checkpoint::InputNeeded` like any other, and
+//! `state.is_recovering()` tells you that the parser is skipping input.
 //!
 //! ### Recovery algorithm
 //!
@@ -751,7 +752,8 @@
 //!    the parser can act on in the post-`error` state (the sync token, e.g. `Semi`
 //!    above), taking into account any reductions the parser would perform first
 //!    (such as reducing `stmt → error` before shifting `Semi`). If EOF is reached
-//!    with no valid sync token, the parse fails.
+//!    with no valid sync token, the parse fails with [`ParseError::UnexpectedEof`],
+//!    whose `expected` field lists the tokens that would have ended recovery.
 //! 5. **Continue**: resume normal parsing from the post-`error` state.
 //!
 //! The `error` pseudo-token is filtered out of the `expected` field of
@@ -840,8 +842,8 @@
 //! Alongside `parse`, the macro generates a lower-level incremental API that lets
 //! you feed tokens one at a time and inspect the parser state between steps. This
 //! is useful for interactive tools, speculative parsing, or building your own error
-//! handling. Unlike `parse`, `feed` does not perform [error recovery](#error-recovery):
-//! it returns `Checkpoint::Rejected` at the first unexpected token.
+//! handling. `feed` performs the same [error recovery](#error-recovery) as `parse`:
+//! both use one implementation of it, `parse` switching to it at its first error.
 //!
 //! ```rust
 //! # use ferrolith::grammar;
@@ -906,11 +908,14 @@
 //!
 //! ### `ParserState`
 //!
-//! The state carried by `Checkpoint::InputNeeded` exposes two methods:
+//! The state carried by `Checkpoint::InputNeeded` exposes three methods:
 //!
 //! - `state.current_state() -> usize`: the numeric LR state the parser is in.
 //! - `state.expected_terminals() -> Vec<&'static str>`: terminal names that would
 //!   advance the parse without error, equivalent to the `expected` field on [`ParseError`].
+//!   While recovering, these are the tokens that would end recovery.
+//! - `state.is_recovering() -> bool`: whether the parser is discarding input after a
+//!   syntax error (see [Error recovery](#error-recovery)).
 //!
 //! ### Speculative parsing (opt-in Clone)
 //!

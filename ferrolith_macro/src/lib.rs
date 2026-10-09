@@ -944,58 +944,199 @@ fn gen_parse_function(
 
     let token_type = &grammar.tokens_type;
 
-    let parse_ret_ty = if let Some(ref ty) = grammar.payload_type {
-        quote! {
-            (#token_type, #ty)
-        }
+    // What `parse` reads from its iterator and `feed` receives: the token, paired
+    // with its payload when there is one.
+    let tok_ty = if let Some(ref ty) = grammar.payload_type {
+        quote! { (#token_type, #ty) }
     } else {
         quote! { #token_type }
     };
 
     let token_id_expr = if grammar.payload_type.is_some() {
+        quote! { __token_id_opt(token.as_ref().map(|(t, _)| t)) }
+    } else {
+        quote! { __token_id_opt(token.as_ref()) }
+    };
+
+    let shift_body = if grammar.payload_type.is_some() {
         quote! {
-            __token_id_opt(token.as_ref().map(|(t, _)| t));
+            let (tok, pay) = token.expect("shift on EOF is a parser bug");
+            state.value_stack.push(__Value::T_Token(tok));
+            state.payload_stack.push(pay);
         }
     } else {
         quote! {
-            __token_id_opt(token.as_ref());
+            state.value_stack.push(__Value::T_Token(token.expect("shift on EOF is a parser bug")));
         }
     };
 
-    let error_payload_push = grammar.payload_type.as_ref().map(|_| {
-        // At end of input there is no token to take a payload from: use the
-        // default, or give up on recovery when `no_payload_default` is set.
-        let eof_payload = payload_default_expr(grammar).unwrap_or_else(|| {
+    let reduce = |prod: proc_macro2::TokenStream| {
+        if grammar.payload_type.is_some() {
             quote! {
-                return Err(::ferrolith::ParseError::UnexpectedEof {
-                    expected: error_expected,
-                })
+                let (lhs, rhs_len) = __prod_info(#prod);
+                let (result, payload_result) =
+                    __reduce(#prod, &mut state.value_stack, &mut state.payload_stack);
+                state.state_stack.truncate(state.state_stack.len() - rhs_len);
+                let next = __goto(*state.state_stack.last().unwrap(), lhs);
+                state.state_stack.push(next);
+                state.value_stack.push(result);
+                state.payload_stack.push(payload_result);
             }
-        });
-        quote! {
-            let __error_payload = match token {
-                Some((_, ref p)) => p.clone(),
-                None => #eof_payload,
-            };
-            payload_stack.push(__error_payload);
+        } else {
+            quote! {
+                let (lhs, rhs_len) = __prod_info(#prod);
+                let result = __reduce(#prod, &mut state.value_stack);
+                state.state_stack.truncate(state.state_stack.len() - rhs_len);
+                let next = __goto(*state.state_stack.last().unwrap(), lhs);
+                state.state_stack.push(next);
+                state.value_stack.push(result);
+            }
         }
+    };
+    let reduce_explicit = reduce(quote! { p });
+    let reduce_default = reduce(quote! { default_prod });
+
+    // `parse`'s fast path keeps its stacks in locals rather than behind
+    // `&mut ParserState`, which is measurably faster on error-free input.
+    let local_reduce = |prod: proc_macro2::TokenStream| {
+        if grammar.payload_type.is_some() {
+            quote! {
+                let (lhs, rhs_len) = __prod_info(#prod);
+                let (result, payload_result) =
+                    __reduce(#prod, &mut value_stack, &mut payload_stack);
+                state_stack.truncate(state_stack.len() - rhs_len);
+                let next = __goto(*state_stack.last().unwrap(), lhs);
+                state_stack.push(next);
+                value_stack.push(result);
+                payload_stack.push(payload_result);
+            }
+        } else {
+            quote! {
+                let (lhs, rhs_len) = __prod_info(#prod);
+                let result = __reduce(#prod, &mut value_stack);
+                state_stack.truncate(state_stack.len() - rhs_len);
+                let next = __goto(*state_stack.last().unwrap(), lhs);
+                state_stack.push(next);
+                value_stack.push(result);
+            }
+        }
+    };
+    let local_reduce_explicit = local_reduce(quote! { p });
+    let local_reduce_default = local_reduce(quote! { default_prod });
+
+    let local_payload_stack = grammar.payload_type.as_ref().map(|ty| {
+        quote! { let mut payload_stack: Vec<#ty> = Vec::with_capacity(64); }
     });
 
-    let payload_stack_trunc = if grammar.payload_type.is_some() {
-        Some(quote! {
-            payload_stack.truncate(new_len.saturating_sub(1));
-        })
+    let local_shift = if grammar.payload_type.is_some() {
+        quote! {
+            let (tok, pay) = token.expect("shift on EOF is a parser bug");
+            value_stack.push(__Value::T_Token(tok));
+            payload_stack.push(pay);
+        }
     } else {
-        None
+        quote! {
+            value_stack.push(__Value::T_Token(token.expect("shift on EOF is a parser bug")));
+        }
     };
 
-    let err_handling = if let Some(err_id) = error_terminal_id {
+    // First error with no default reduction: hand the stacks over to `__step`,
+    // which performs recovery exactly as `feed` does, for the rest of the input.
+    let fast_path_error = if error_terminal_id.is_some() {
+        let payload_field = grammar
+            .payload_type
+            .as_ref()
+            .map(|_| quote! { payload_stack, });
         quote! {
-            let error_expected = __expected_tokens(state);
+            let mut slow = ParserState {
+                state_stack,
+                value_stack,
+                #payload_field
+                recovering: false,
+            };
+            let mut next = token;
+            loop {
+                match __step(&mut slow, next) {
+                    __Step::InputNeeded => {}
+                    __Step::Accepted(v) => return Ok(v),
+                    __Step::Rejected(e) => return Err(e),
+                }
+                next = tokens.next();
+            }
+        }
+    } else {
+        quote! {
+            return Err(match token {
+                Some(t) => ::ferrolith::ParseError::UnexpectedToken {
+                    token: t,
+                    expected: __expected_tokens(state),
+                },
+                None => ::ferrolith::ParseError::UnexpectedEof {
+                    expected: __expected_tokens(state),
+                },
+            });
+        }
+    };
+
+    let reject = |expected: proc_macro2::TokenStream| {
+        quote! {
+            return __Step::Rejected(match token {
+                Some(t) => ::ferrolith::ParseError::UnexpectedToken { token: t, expected: #expected },
+                None => ::ferrolith::ParseError::UnexpectedEof { expected: #expected },
+            });
+        }
+    };
+
+    // While recovering, input is discarded until a token can be consumed; the
+    // recovery itself starts in the `Error` arm below.
+    let (recovering_check, err_handling) = if let Some(err_id) = error_terminal_id {
+        let error_payload_push = grammar.payload_type.as_ref().map(|_| {
+            // At end of input there is no token to take a payload from: use the
+            // default, or give up on recovery when `no_payload_default` is set.
+            let eof_payload = payload_default_expr(grammar).unwrap_or_else(|| {
+                quote! {
+                    return __Step::Rejected(::ferrolith::ParseError::UnexpectedEof {
+                        expected: error_expected,
+                    })
+                }
+            });
+            quote! {
+                let __error_payload = match token {
+                    Some((_, ref p)) => p.clone(),
+                    None => #eof_payload,
+                };
+                state.payload_stack.push(__error_payload);
+            }
+        });
+
+        let payload_stack_trunc = grammar.payload_type.as_ref().map(|_| {
+            quote! { state.payload_stack.truncate(new_len - 1); }
+        });
+
+        let reject_original = reject(quote! { error_expected });
+
+        let recovering_check = quote! {
+            if state.recovering {
+                if !__can_consume(&state.state_stack, terminal_id) {
+                    if terminal_id == 0 {
+                        // End of input before any token that ends recovery.
+                        return __Step::Rejected(::ferrolith::ParseError::UnexpectedEof {
+                            expected: state.expected_terminals(),
+                        });
+                    }
+                    // Discard this token (and its payload).
+                    return __Step::InputNeeded;
+                }
+                state.recovering = false;
+            }
+        };
+
+        let err_handling = quote! {
+            let error_expected = __expected_tokens(current_state);
 
             let mut pop_count = 0;
-            let recovery_state = state_stack.iter().rev().cloned().find(|state|
-                if let ::ferrolith::action::Action::Shift(_) = __action(*state, #err_id) {
+            let recovery_state = state.state_stack.iter().rev().cloned().find(|s|
+                if let ::ferrolith::action::Action::Shift(_) = __action(*s, #err_id) {
                     true
                 } else {
                     pop_count += 1;
@@ -1004,133 +1145,94 @@ fn gen_parse_function(
             );
 
             if let Some(candidate) = recovery_state {
-                let new_len = state_stack.len() - pop_count;
+                let new_len = state.state_stack.len() - pop_count;
                 let shift_target = match __action(candidate, #err_id) {
                     ::ferrolith::action::Action::Shift(s) => s,
                     _ => unreachable!(),
                 };
 
-                state_stack.truncate(new_len);
-                value_stack.truncate(new_len.saturating_sub(1));
+                state.state_stack.truncate(new_len);
+                state.value_stack.truncate(new_len - 1);
                 #payload_stack_trunc
 
-                state_stack.push(shift_target);
-                value_stack.push(__Value::T_Unit);
+                state.state_stack.push(shift_target);
+                state.value_stack.push(__Value::T_Unit);
                 #error_payload_push
 
-                while
-                    !__can_consume(&state_stack, terminal_id) && terminal_id != 0 {
-                        token = tokens.next();
-                        terminal_id = #token_id_expr;
+                if __can_consume(&state.state_stack, terminal_id) {
+                    // The offending token is itself a sync token.
+                    continue;
                 }
-
-                if !__can_consume(&state_stack, terminal_id) {
-                    return Err(match token {
-                        Some(t) => ::ferrolith::ParseError::UnexpectedToken {
-                            token: t,
-                            expected: error_expected,
-                        },
-                        None => ::ferrolith::ParseError::UnexpectedEof {
-                            expected: error_expected,
-                        },
+                if terminal_id == 0 {
+                    return __Step::Rejected(::ferrolith::ParseError::UnexpectedEof {
+                        expected: error_expected,
                     });
                 }
-
-                continue;
-
-            } else {
-                return Err(match token {
-                    Some(t) => ::ferrolith::ParseError::UnexpectedToken {
-                        token: t,
-                        expected: error_expected,
-                    },
-                    None => ::ferrolith::ParseError::UnexpectedEof {
-                        expected: error_expected,
-                    },
-                });
+                // Discard the offending token and wait for the next one.
+                state.recovering = true;
+                return __Step::InputNeeded;
             }
 
-        }
+            #reject_original
+        };
+
+        (Some(recovering_check), err_handling)
     } else {
-        quote! {
-            return Err(match token {
-                Some(t) => ::ferrolith::ParseError::UnexpectedToken {
-                    token: t,
-                    expected: __expected_tokens(state)
-                },
-                None => ::ferrolith::ParseError::UnexpectedEof {
-                    expected: __expected_tokens(state)
-                },
-            });
-        }
+        (None, reject(quote! { __expected_tokens(current_state) }))
     };
 
-    let iter_type = if let Some(ref ty) = grammar.payload_type {
-        quote! {
-            impl Iterator<Item = (#token_type, #ty)>
-        }
-    } else {
-        quote! {
-            impl Iterator<Item = #token_type>
-        }
-    };
-
-    let payload_stack = if let Some(ref ty) = grammar.payload_type {
-        Some(quote! {
-            let mut payload_stack: Vec<#ty> = Vec::with_capacity(64);
-        })
-    } else {
-        None
-    };
-
-    let reduce_call = if grammar.payload_type.is_some() {
-        quote! {
-            let (result, payload_result) = __reduce(p, &mut value_stack, &mut payload_stack);
-        }
-    } else {
-        quote! {
-            let result = __reduce(p, &mut value_stack);
-        }
-    };
-
-    let reduce_call_default = if grammar.payload_type.is_some() {
-        quote! {
-            let (result, payload_result) =
-                __reduce(default_prod, &mut value_stack, &mut payload_stack);
-        }
-    } else {
-        quote! {
-            let result = __reduce(default_prod, &mut value_stack);
-        }
-    };
-
-    let reduce_payload_push = if grammar.payload_type.is_some() {
-        Some(quote! {
-            payload_stack.push(payload_result);
-        })
-    } else {
-        None
-    };
-
-    let shift_body = if grammar.payload_type.is_some() {
-        quote! {
-            let (tok, pay) = token.unwrap();
-            value_stack.push(__Value::T_Token(tok));
-            payload_stack.push(pay);
-        }
-    } else {
-        quote! {
-            value_stack.push(__Value::T_Token(token.unwrap()));
-        }
-    };
+    let iter_type = quote! { impl Iterator<Item = #tok_ty> };
 
     quote! {
+        /// Outcome of feeding one token to [`__step`].
+        enum __Step {
+            InputNeeded,
+            Accepted(#start_ret_type),
+            Rejected(::ferrolith::ParseError<#tok_ty>),
+        }
+
+        /// Advances the parser by one token (`None` for end of input). Shared by
+        /// `parse` and `feed`, including error recovery.
+        fn __step(state: &mut ParserState, token: Option<#tok_ty>) -> __Step {
+            let terminal_id = #token_id_expr;
+
+            #recovering_check
+
+            loop {
+                let current_state = *state.state_stack.last().unwrap();
+                match __action(current_state, terminal_id) {
+                    ::ferrolith::action::Action::Shift(s) => {
+                        state.state_stack.push(s);
+                        #shift_body
+                        return __Step::InputNeeded;
+                    }
+                    ::ferrolith::action::Action::Reduce(p) => {
+                        #reduce_explicit
+                    }
+                    ::ferrolith::action::Action::Accept => {
+                        return __Step::Accepted(match state.value_stack.pop().unwrap() {
+                            __Value::#start_variant(v) => v,
+                            _ => unreachable!(),
+                        });
+                    }
+                    ::ferrolith::action::Action::Error => {
+                        let default_prod = __DEFAULT_REDUCTIONS[current_state];
+                        if default_prod != usize::MAX {
+                            #reduce_default
+                        } else {
+                            #err_handling
+                        }
+                    }
+                }
+            }
+        }
+
         #api_vis fn parse(
             mut tokens: #iter_type
-        ) -> Result<#start_ret_type, ::ferrolith::ParseError<#parse_ret_ty>> {
+        ) -> Result<#start_ret_type, ::ferrolith::ParseError<#tok_ty>> {
             let mut state_stack: Vec<usize> = Vec::with_capacity(64);
             let mut value_stack: Vec<__Value> = Vec::with_capacity(64);
-            #payload_stack
+            #local_payload_stack
             state_stack.push(0usize);
 
             let mut token = tokens.next();
@@ -1141,18 +1243,12 @@ fn gen_parse_function(
                 match __action(state, terminal_id) {
                     ::ferrolith::action::Action::Shift(s) => {
                         state_stack.push(s);
-                        #shift_body
+                        #local_shift
                         token = tokens.next();
                         terminal_id = #token_id_expr;
                     }
                     ::ferrolith::action::Action::Reduce(p) => {
-                        let (lhs, rhs_len) = __prod_info(p);
-                        #reduce_call
-                        state_stack.truncate(state_stack.len() - rhs_len);
-                        let next = __goto(*state_stack.last().unwrap(), lhs);
-                        state_stack.push(next);
-                        value_stack.push(result);
-                        #reduce_payload_push
+                        #local_reduce_explicit
                     }
                     ::ferrolith::action::Action::Accept => {
                         return Ok(match value_stack.pop().unwrap() {
@@ -1163,15 +1259,9 @@ fn gen_parse_function(
                     ::ferrolith::action::Action::Error => {
                         let default_prod = __DEFAULT_REDUCTIONS[state];
                         if default_prod != usize::MAX {
-                            let (lhs, rhs_len) = __prod_info(default_prod);
-                            #reduce_call_default
-                            state_stack.truncate(state_stack.len() - rhs_len);
-                            let next = __goto(*state_stack.last().unwrap(), lhs);
-                            state_stack.push(next);
-                            value_stack.push(result);
-                            #reduce_payload_push
+                            #local_reduce_default
                         } else {
-                            #err_handling
+                            #fast_path_error
                         }
                     }
                 }
@@ -1230,9 +1320,20 @@ fn gen_incremental_api(
             pub state_stack: Vec<usize>,
             pub value_stack: Vec<__Value>,
             #payload_stack_field
+            /// Discarding input after a syntax error, until a token lets the
+            /// parser resume. See [`ParserState::is_recovering`].
+            recovering: bool,
         }
 
         impl ParserState {
+            /// Whether the parser is discarding input after a syntax error: an
+            /// `error` alternative matched, and tokens are dropped until one of
+            /// the tokens that can follow it arrives. Discarded tokens still
+            /// return [`Checkpoint::InputNeeded`].
+            #api_vis fn is_recovering(&self) -> bool {
+                self.recovering
+            }
+
             /// Returns the numeric LR state the parser is currently in.
             #api_vis fn current_state(&self) -> usize {
                 *self.state_stack.last().unwrap()
@@ -1268,28 +1369,28 @@ fn gen_incremental_api(
             /// The grammar was fully satisfied. The inner value is the result of
             /// the start rule's action expression.
             Accepted(#start_ret_type),
-            /// The parser encountered an unexpected token or end of input. [`feed`]
-            /// does not perform error recovery, so this is returned at the first
-            /// error. The first field is the parser state at the point of failure
-            /// (preserved for diagnostics); the second describes what went wrong.
+            /// The parser encountered an error it could not recover from. The first
+            /// field is the parser state at the point of failure (preserved for
+            /// diagnostics); the second describes what went wrong.
             Rejected(ParserState, ::ferrolith::ParseError<#checkpoint_err_ty>),
         }
     };
 
-    let start_fn_body = if grammar.payload_type.is_some() {
-        quote! {
+    let payload_stack_init = grammar
+        .payload_type
+        .as_ref()
+        .map(|_| quote! { payload_stack: Vec::with_capacity(64), });
+
+    let initial_state_fn = quote! {
+        fn __initial_state() -> ParserState {
             let mut state_stack = Vec::with_capacity(64);
-            let value_stack = Vec::with_capacity(64);
             state_stack.push(0usize);
-            let payload_stack = Vec::with_capacity(64);
-            Checkpoint::InputNeeded(ParserState { state_stack, value_stack, payload_stack })
-        }
-    } else {
-        quote! {
-            let mut state_stack = Vec::with_capacity(64);
-            let value_stack = Vec::with_capacity(64);
-            state_stack.push(0usize);
-            Checkpoint::InputNeeded(ParserState { state_stack, value_stack })
+            ParserState {
+                state_stack,
+                value_stack: Vec::with_capacity(64),
+                #payload_stack_init
+                recovering: false,
+            }
         }
     };
 
@@ -1299,7 +1400,7 @@ fn gen_incremental_api(
         /// Returns [`Checkpoint::InputNeeded`] containing the initial [`ParserState`].
         /// Feed the first token with [`feed`].
         #api_vis fn start() -> Checkpoint {
-            #start_fn_body
+            Checkpoint::InputNeeded(__initial_state())
         }
     };
 
@@ -1323,143 +1424,28 @@ fn gen_incremental_api(
         }
     };
 
-    let start_variant = format_ident!(
-        "N_{}",
-        internal_grammar.nonterminals[start_nt_id]
-            .to_string()
-            .to_pascal_case()
-    );
-
     let token_ty = if let Some(ref ty) = grammar.payload_type {
-        quote! {
-            (#tokens_type, #ty)
-        }
+        quote! { (#tokens_type, #ty) }
     } else {
-        quote! {
-            #tokens_type
-        }
-    };
-
-    let token_id_expr = if grammar.payload_type.is_some() {
-        quote! {
-            __token_id_opt(token.as_ref().map(|(t, _)| t))
-        }
-    } else {
-        quote! {
-            __token_id_opt(token.as_ref())
-        }
-    };
-
-    let shift_arm = if grammar.payload_type.is_some() {
-        quote! {
-            let (tok, pay) = token.expect("shift on EOF is a parser bug");
-            state.value_stack.push(__Value::T_Token(tok));
-            state.payload_stack.push(pay);
-        }
-    } else {
-        quote! {
-            state.value_stack.push(
-                __Value::T_Token(
-                    token.expect("shift on EOF is a parser bug")
-                )
-            );
-        }
-    };
-
-    let reduce_call = if grammar.payload_type.is_some() {
-        quote! {
-            let (result, payload_result) = __reduce(
-                p,
-                &mut state.value_stack,
-                &mut state.payload_stack);
-        }
-    } else {
-        quote! {
-            let result = __reduce(p, &mut state.value_stack);
-        }
-    };
-
-    let reduce_call_default = if grammar.payload_type.is_some() {
-        quote! {
-            let (result, payload_result) = __reduce(
-                default_prod,
-                &mut state.value_stack,
-                &mut state.payload_stack);
-        }
-    } else {
-        quote! {
-            let result = __reduce(default_prod, &mut state.value_stack);
-        }
-    };
-
-    let reduce_payload_push = if grammar.payload_type.is_some() {
-        Some(quote! {
-            state.payload_stack.push(payload_result);
-        })
-    } else {
-        None
+        quote! { #tokens_type }
     };
 
     let feed_fn = quote! {
         /// Advances the parser by one token.
         ///
         /// Pass `Some(token)` to supply the next token, or `None` to signal end of
-        /// input. The returned [`Checkpoint`] describes the outcome.
+        /// input. The returned [`Checkpoint`] describes the outcome. Error recovery
+        /// works as in `parse`: while [`ParserState::is_recovering`], discarded
+        /// tokens return [`Checkpoint::InputNeeded`].
         ///
         /// Only call this with a [`ParserState`] obtained from
         /// [`Checkpoint::InputNeeded`]; calling it after acceptance or rejection is
         /// a logic error.
         #api_vis fn feed(mut state: ParserState, token: Option<#token_ty>) -> Checkpoint {
-            let terminal_id = #token_id_expr;
-            loop {
-                let current_state = *state.state_stack.last().unwrap();
-                match __action(current_state, terminal_id) {
-                    ::ferrolith::action::Action::Shift(s) => {
-                        state.state_stack.push(s);
-                        #shift_arm
-                        return Checkpoint::InputNeeded(state);
-                    }
-                    ::ferrolith::action::Action::Reduce(p) => {
-                        let (lhs, rhs_len) = __prod_info(p);
-                        #reduce_call
-                        state.state_stack.truncate(state.state_stack.len() - rhs_len);
-                        let next = __goto(*state.state_stack.last().unwrap(), lhs);
-                        #reduce_payload_push
-                        state.state_stack.push(next);
-                        state.value_stack.push(result);
-                    }
-                    ::ferrolith::action::Action::Accept => {
-                        let v = state.value_stack.pop().unwrap();
-                        let res = match v {
-                            __Value::#start_variant(inner) => inner,
-                            _ => unreachable!()
-                        };
-                        return Checkpoint::Accepted(res);
-                    }
-                    ::ferrolith::action::Action::Error => {
-                        let default_prod = __DEFAULT_REDUCTIONS[current_state];
-                        if default_prod != usize::MAX {
-                            let (lhs, rhs_len) = __prod_info(default_prod);
-                            #reduce_call_default
-                            state.state_stack.truncate(state.state_stack.len() - rhs_len);
-                            let next = __goto(*state.state_stack.last().unwrap(), lhs);
-                            #reduce_payload_push
-                            state.state_stack.push(next);
-                            state.value_stack.push(result);
-                        } else {
-                            let expected = __expected_tokens(current_state);
-                            return Checkpoint::Rejected(state, match token {
-                                Some(t) => ::ferrolith::ParseError::UnexpectedToken {
-                                    token: t,
-                                    expected
-                                },
-                                None => ::ferrolith::ParseError::UnexpectedEof {
-                                    expected
-                                },
-                            });
-                        }
-                    }
-                }
+            match __step(&mut state, token) {
+                __Step::InputNeeded => Checkpoint::InputNeeded(state),
+                __Step::Accepted(v) => Checkpoint::Accepted(v),
+                __Step::Rejected(e) => Checkpoint::Rejected(state, e),
             }
         }
     };
@@ -1487,8 +1473,9 @@ fn gen_incremental_api(
     quote! {
         #types
 
-        #start_fn
+        #initial_state_fn
 
+        #start_fn
 
         #prod_info_fn
 

@@ -266,3 +266,151 @@ mod unknown_variant {
         assert!(matches!(cp, Checkpoint::Accepted(1)));
     }
 }
+
+mod incremental_recovery {
+    // Error recovery through `feed`, one token at a time. Same grammar as
+    // `error_recovery.rs::stmt_recovery`.
+    use ferrolith::grammar;
+
+    #[derive(Debug, Clone, Copy)]
+    enum Tok {
+        Num(i64),
+        Plus,
+        Semi,
+    }
+
+    grammar! {
+        #![parser_cfg(clonable_state)]
+
+        type Token = Tok;
+
+        #[left(Plus)]
+
+        #[start]
+        fn stmts() -> Vec<Option<i64>> {
+            () => vec![],
+            (mut ss @ stmts, s @ stmt) => { ss.push(s); ss },
+        }
+
+        fn stmt() -> Option<i64> {
+            (v @ expr, Semi) => Some(v),
+            (error, Semi)    => None,
+        }
+
+        fn expr() -> i64 {
+            (Num(n))                   => n,
+            (l @ expr, Plus, r @ expr) => l + r,
+        }
+    }
+
+    fn expect_input_needed(cp: Checkpoint) -> ParserState {
+        match cp {
+            Checkpoint::InputNeeded(s) => s,
+            Checkpoint::Accepted(_) => panic!("expected InputNeeded, got Accepted"),
+            Checkpoint::Rejected(_, e) => panic!("expected InputNeeded, got Rejected({e:?})"),
+        }
+    }
+
+    /// Feeds every token then end of input, like `parse` but through `feed`.
+    fn feed_all(tokens: &[Tok]) -> Result<Vec<Option<i64>>, ferrolith::ParseError<Tok>> {
+        let mut state = expect_input_needed(start());
+        for &tok in tokens {
+            state = match feed(state, Some(tok)) {
+                Checkpoint::InputNeeded(s) => s,
+                Checkpoint::Accepted(_) => panic!("accepted before end of input"),
+                Checkpoint::Rejected(_, e) => return Err(e),
+            };
+        }
+        match feed(state, None) {
+            Checkpoint::Accepted(v) => Ok(v),
+            Checkpoint::Rejected(_, e) => Err(e),
+            Checkpoint::InputNeeded(_) => panic!("InputNeeded after end of input"),
+        }
+    }
+
+    // "1 + +": the second `Plus` triggers recovery and is discarded.
+    fn recovering_state() -> ParserState {
+        let mut state = expect_input_needed(start());
+        for tok in [Tok::Num(1), Tok::Plus, Tok::Plus] {
+            state = expect_input_needed(feed(state, Some(tok)));
+        }
+        state
+    }
+
+    #[test]
+    fn recovers_like_parse() {
+        use Tok::*;
+        let inputs: &[&[Tok]] = &[
+            &[Num(1), Semi, Num(2), Semi],
+            &[Plus, Semi],
+            &[Plus, Semi, Num(2), Semi],
+            &[Num(1), Semi, Plus, Semi, Num(3), Semi],
+            &[Num(1), Plus, Semi],
+            &[Num(1), Plus, Plus, Plus, Num(9), Semi, Num(2), Semi],
+            &[Plus, Semi, Plus, Semi],
+            &[Plus],
+            &[Num(1), Plus, Plus],
+        ];
+        for input in inputs {
+            let incremental = feed_all(input);
+            let batch = parse(input.iter().copied());
+            assert_eq!(
+                format!("{incremental:?}"),
+                format!("{batch:?}"),
+                "input: {input:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn is_recovering_while_discarding() {
+        let state = recovering_state();
+        assert!(state.is_recovering());
+        assert_eq!(state.expected_terminals(), vec!["Semi"]);
+
+        let state = expect_input_needed(feed(state, Some(Tok::Semi)));
+        assert!(!state.is_recovering());
+    }
+
+    #[test]
+    fn discarded_tokens_return_input_needed() {
+        let mut state = recovering_state();
+        for tok in [Tok::Num(5), Tok::Plus, Tok::Num(6)] {
+            state = expect_input_needed(feed(state, Some(tok)));
+            assert!(state.is_recovering());
+        }
+        let state = expect_input_needed(feed(state, Some(Tok::Semi)));
+        assert!(matches!(feed(state, None), Checkpoint::Accepted(v) if v == vec![None]));
+    }
+
+    #[test]
+    fn eof_while_recovering_rejects() {
+        match feed(recovering_state(), None) {
+            Checkpoint::Rejected(_, ferrolith::ParseError::UnexpectedEof { expected }) => {
+                // The tokens that would have ended recovery.
+                assert_eq!(expected, vec!["Semi"]);
+            }
+            _ => panic!("expected Rejected(UnexpectedEof)"),
+        }
+    }
+
+    #[test]
+    fn clone_while_recovering() {
+        let state = recovering_state();
+        let cloned = state.clone();
+        assert!(cloned.is_recovering());
+
+        // Path A: resynchronise, then parse one more statement.
+        let mut a = state;
+        for tok in [Tok::Semi, Tok::Num(2), Tok::Semi] {
+            a = expect_input_needed(feed(a, Some(tok)));
+        }
+        assert!(matches!(feed(a, None), Checkpoint::Accepted(v) if v == vec![None, Some(2)]));
+
+        // Path B: end of input while still recovering.
+        assert!(matches!(
+            feed(cloned, None),
+            Checkpoint::Rejected(_, ferrolith::ParseError::UnexpectedEof { .. })
+        ));
+    }
+}

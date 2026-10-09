@@ -147,6 +147,19 @@ mod stmt_recovery {
             vec![None, Some(2)]
         );
     }
+
+    // The error fires on the second `Plus`; recovery then reaches end of input
+    // while waiting for `Semi`, which is what `expected` reports.
+    #[test]
+    fn eof_while_recovering_expects_sync_token() {
+        let err = parse([Tok::Num(1), Tok::Plus, Tok::Plus].into_iter()).unwrap_err();
+        match err {
+            ferrolith::ParseError::UnexpectedEof { expected } => {
+                assert_eq!(expected, vec!["Semi"]);
+            }
+            _ => panic!("expected UnexpectedEof"),
+        }
+    }
 }
 
 mod no_error_productions {
@@ -254,6 +267,30 @@ mod payload_after_recovery {
     fn offending_token_is_sync_token() {
         let tokens = [(Tok::Num(1), 10u32), (Tok::Plus, 11), (Tok::Semi, 12)];
         assert_eq!(parse(tokens.into_iter()).unwrap(), vec![(None, 12)]);
+    }
+
+    #[test]
+    fn recovery_through_feed() {
+        let tokens = [
+            (Tok::Num(1), 10u32),
+            (Tok::Plus, 11),
+            (Tok::Plus, 12),
+            (Tok::Semi, 13),
+        ];
+        let mut state = match start() {
+            Checkpoint::InputNeeded(s) => s,
+            _ => panic!("expected InputNeeded"),
+        };
+        for tok in tokens {
+            state = match feed(state, Some(tok)) {
+                Checkpoint::InputNeeded(s) => s,
+                _ => panic!("expected InputNeeded"),
+            };
+        }
+        match feed(state, None) {
+            Checkpoint::Accepted(v) => assert_eq!(v, vec![(None, 12)]),
+            _ => panic!("expected Accepted"),
+        }
     }
 }
 
