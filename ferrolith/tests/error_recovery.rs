@@ -7,6 +7,8 @@ mod stmt_recovery {
         Num(i64),
         Plus,
         Semi,
+        // Not used by the grammar: always an unexpected token.
+        Bang,
     }
 
     grammar! {
@@ -134,6 +136,16 @@ mod stmt_recovery {
             ferrolith::ParseError::UnexpectedEof { expected } => expected,
         };
         assert!(!expected.contains(&"__error__"));
+    }
+
+    // A variant the grammar never mentions is discarded like any other junk.
+    #[test]
+    fn unknown_variant_discarded_by_recovery() {
+        assert_eq!(
+            parse([Tok::Num(1), Tok::Bang, Tok::Semi, Tok::Num(2), Tok::Semi].into_iter())
+                .unwrap(),
+            vec![None, Some(2)]
+        );
     }
 }
 

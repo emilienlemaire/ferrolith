@@ -160,3 +160,63 @@ mod incremental {
         }
     }
 }
+
+mod unknown_variant {
+    // `Minus` is a variant of the token type that the grammar never mentions.
+    // It must be reported as an unexpected token, not panic.
+    use ferrolith::grammar;
+
+    enum Tok {
+        Num(i64),
+        Plus,
+        Minus,
+    }
+
+    grammar! {
+        type Token = Tok;
+
+        #[left(Plus)]
+
+        #[start]
+        fn expr() -> i64 {
+            (Num(n))                   => n,
+            (l @ expr, Plus, r @ expr) => l + r,
+        }
+    }
+
+    #[test]
+    fn unknown_variant_is_unexpected_token() {
+        let err = parse([Tok::Num(1), Tok::Minus].into_iter()).unwrap_err();
+        match err {
+            ferrolith::ParseError::UnexpectedToken { token, expected } => {
+                assert!(matches!(token, Tok::Minus));
+                assert_eq!(expected, vec!["<eof>", "Plus"]);
+            }
+            _ => panic!("expected UnexpectedToken"),
+        }
+    }
+
+    #[test]
+    fn unknown_variant_first() {
+        let err = parse([Tok::Minus].into_iter()).unwrap_err();
+        match err {
+            ferrolith::ParseError::UnexpectedToken { token, expected } => {
+                assert!(matches!(token, Tok::Minus));
+                assert_eq!(expected, vec!["Num"]);
+            }
+            _ => panic!("expected UnexpectedToken"),
+        }
+    }
+
+    #[test]
+    fn unknown_variant_after_plus() {
+        let err = parse([Tok::Num(1), Tok::Plus, Tok::Minus].into_iter()).unwrap_err();
+        match err {
+            ferrolith::ParseError::UnexpectedToken { token, expected } => {
+                assert!(matches!(token, Tok::Minus));
+                assert_eq!(expected, vec!["Num"]);
+            }
+            _ => panic!("expected UnexpectedToken"),
+        }
+    }
+}

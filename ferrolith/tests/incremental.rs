@@ -219,3 +219,50 @@ mod speculative {
         assert!(matches!(cp_b, Checkpoint::Accepted(6)));
     }
 }
+
+mod unknown_variant {
+    // A variant the grammar never mentions is rejected by `feed`.
+    use ferrolith::grammar;
+
+    enum Tok {
+        Num(i64),
+        Minus,
+    }
+
+    grammar! {
+        type Token = Tok;
+
+        #[start]
+        fn value() -> i64 {
+            (Num(n)) => n,
+        }
+    }
+
+    #[test]
+    fn unknown_variant_rejected() {
+        let cp = match start() {
+            Checkpoint::InputNeeded(s) => feed(s, Some(Tok::Minus)),
+            _ => panic!("expected InputNeeded"),
+        };
+        assert!(matches!(
+            cp,
+            Checkpoint::Rejected(
+                _,
+                ferrolith::ParseError::UnexpectedToken { token: Tok::Minus, .. }
+            )
+        ));
+    }
+
+    #[test]
+    fn known_variant_still_accepted() {
+        let cp = match start() {
+            Checkpoint::InputNeeded(s) => feed(s, Some(Tok::Num(1))),
+            _ => panic!("expected InputNeeded"),
+        };
+        let cp = match cp {
+            Checkpoint::InputNeeded(s) => feed(s, None),
+            _ => panic!("expected InputNeeded after shift"),
+        };
+        assert!(matches!(cp, Checkpoint::Accepted(1)));
+    }
+}

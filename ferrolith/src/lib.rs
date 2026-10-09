@@ -104,6 +104,10 @@
 //! - **Capture**: `Num(n)` matches `Token::Num(n)` and binds the inner value to `n`.
 //!   Multiple fields: `Pair(a, b)` matches `Token::Pair(a, b)`.
 //!
+//! The grammar does not have to use every variant, so one lexer can feed several
+//! grammars. A variant that no rule mentions is never valid: the parser reports it as
+//! [`ParseError::UnexpectedToken`], or discards it during [error recovery](#error-recovery).
+//!
 //! ---
 //!
 //! ## Token payload

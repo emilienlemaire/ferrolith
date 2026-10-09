@@ -241,6 +241,8 @@ mod payload_in_parse_error {
 
     enum Tok {
         Num(i64),
+        // Not used by the grammar.
+        Minus,
     }
 
     grammar! {
@@ -275,6 +277,22 @@ mod payload_in_parse_error {
     fn unexpected_eof_has_no_token() {
         let err = parse(std::iter::empty::<(Tok, u32)>()).unwrap_err();
         assert!(matches!(err, ferrolith::ParseError::UnexpectedEof { .. }));
+    }
+
+    #[test]
+    fn unknown_variant_carries_payload() {
+        let tokens = [(Tok::Num(1), 0u32), (Tok::Minus, 7u32)];
+        let err = parse(tokens.into_iter()).unwrap_err();
+        match err {
+            ferrolith::ParseError::UnexpectedToken {
+                token: (tok, payload),
+                ..
+            } => {
+                assert!(matches!(tok, Tok::Minus));
+                assert_eq!(payload, 7);
+            }
+            _ => panic!("expected UnexpectedToken"),
+        }
     }
 }
 

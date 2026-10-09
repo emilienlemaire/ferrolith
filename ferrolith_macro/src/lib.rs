@@ -291,30 +291,15 @@ fn gen_token_enum(
         })
         .collect();
 
+    let unknown_id = internal_grammar.terminals.len();
+
     quote! {
-        enum __Token {
-            Real(__UserToken),
-            Eof,
-        }
-
-        fn __token_id(token: &__Token) -> usize {
-            match token {
-                __Token::Eof => 0,
-                __Token::Real(t) => {
-                    match t {
-                        #(#tokens_arms)*
-                        _ => unreachable!()
-                    }
-                }
-            }
-        }
-
         fn __token_id_opt(token: Option<&__UserToken>) -> usize {
             match token {
                 None => 0,
                 Some(t) => match t {
                     #(#tokens_arms)*
-                    _ => unreachable!()
+                    _ => #unknown_id,
                 }
             }
         }
