@@ -7,10 +7,11 @@ use crate::{
     grammar::{Assoc, InternalGrammar, NonTerminalId, ProductionId, StateId, Symbol, TerminalId},
 };
 
-/// The action the parser should take for a given (state, terminal) pair.
+/// The action the parser should take for a given (state, terminal) pair, as
+/// computed by [`build_tables`].
 ///
-/// Returned by the generated `__action` function and exposed through the
-/// `action` function when `#![parser_cfg(expose_automaton)]` is set.
+/// Compile-time counterpart of `ferrolith::action::Action`: the macro converts
+/// one into the other when it emits the action table.
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub enum Action {
     /// Shift the current token and push the given state onto the state stack.

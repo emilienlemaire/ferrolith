@@ -981,8 +981,18 @@
 //! // Direct table lookups, useful for tooling or visualisation:
 //! let act = action(state_id, terminal_id);
 //! let dst = goto(state_id, nonterminal_id);
+//!
+//! // The production the parser reduces by in this state whatever the next
+//! // token is, if any:
+//! let default: Option<usize> = default_reduction(state_id);
 //! # }
 //! ```
+//!
+//! `action` returns the exact LR(1) table entry. The parser itself uses a smaller
+//! table: in a state where every valid token reduces by the same production, it
+//! reduces without looking at the token, and an invalid token is reported by a
+//! later state, before anything is shifted. `default_reduction` tells which states
+//! behave this way.
 //!
 //! See [`AutomatonView`] for the full API.
 
@@ -995,7 +1005,25 @@ pub use ferrolith_macro::grammar;
 
 pub mod action {
     //! The [`Action`] type used in the generated action table.
-    pub use ferrolith_core::table::Action;
+
+    /// The action the parser should take for a given (state, terminal) pair.
+    ///
+    /// Returned by the `action` function generated when
+    /// `#![parser_cfg(expose_automaton)]` is set, which gives the exact LR(1)
+    /// table entry.
+    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+    pub enum Action {
+        /// Shift the current token and push the given state onto the state stack.
+        Shift(usize),
+        /// Reduce by the given production: pop `rhs.len()` entries from both stacks,
+        /// evaluate the action expression, and push the result.
+        Reduce(usize),
+        /// The input is fully matched. The parse is complete.
+        Accept,
+        /// The token is not valid in the current state. Triggers error recovery if
+        /// the grammar contains an `error` alternative; otherwise the parse fails.
+        Error,
+    }
 }
 
 /// A symbol in the compiled grammar: either a terminal (token variant) or a

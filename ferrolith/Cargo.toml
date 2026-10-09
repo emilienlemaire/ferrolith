@@ -10,7 +10,6 @@ homepage.workspace = true
 
 [dependencies]
 ferrolith_macro = { path = "../ferrolith_macro", version = "0.1" }
-ferrolith_core = { path = "../ferrolith_core", version = "0.1" }
 
 [dev-dependencies]
 trybuild = "1"

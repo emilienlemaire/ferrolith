@@ -196,3 +196,78 @@ mod pseudo_token_in_parametric_rule {
         assert_eq!(parse(tokens.into_iter()).unwrap(), "((-2)*3)");
     }
 }
+
+mod nonassoc_operator {
+    // `1 < 2 < 3` must be rejected: on a tie with a `nonassoc` level, the action
+    // is an error, even though every other lookahead in that state reduces.
+    use ferrolith::{ParseError, grammar};
+
+    #[derive(Debug)]
+    enum Tok {
+        Num(i64),
+        Lt,
+    }
+
+    grammar! {
+        type Token = Tok;
+
+        #[nonassoc(Lt)]
+
+        #[start]
+        fn expr() -> String {
+            (Num(n))                 => n.to_string(),
+            (l @ expr, Lt, r @ expr) => format!("({l}<{r})"),
+        }
+    }
+
+    #[test]
+    fn single_comparison_parses() {
+        let tokens = [Tok::Num(1), Tok::Lt, Tok::Num(2)];
+        assert_eq!(parse(tokens.into_iter()).unwrap(), "(1<2)");
+    }
+
+    #[test]
+    fn chained_comparison_is_rejected() {
+        let tokens = [Tok::Num(1), Tok::Lt, Tok::Num(2), Tok::Lt, Tok::Num(3)];
+        match parse(tokens.into_iter()) {
+            Err(ParseError::UnexpectedToken {
+                token: Tok::Lt,
+                expected,
+                ..
+            }) => {
+                assert_eq!(expected, vec!["<eof>"]);
+            }
+            other => panic!("expected an error on the second `Lt`, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn single_comparison_parses_with_feed() {
+        let mut cp = start();
+        for t in [Some(Tok::Num(1)), Some(Tok::Lt), Some(Tok::Num(2)), None] {
+            cp = match cp {
+                Checkpoint::InputNeeded(s) => feed(s, t),
+                _ => panic!("finished too early"),
+            };
+        }
+        match cp {
+            Checkpoint::Accepted(s) => assert_eq!(s, "(1<2)"),
+            _ => panic!("expected the input to be accepted"),
+        }
+    }
+
+    #[test]
+    fn chained_comparison_is_rejected_by_feed() {
+        let mut cp = start();
+        for t in [Tok::Num(1), Tok::Lt, Tok::Num(2), Tok::Lt] {
+            cp = match cp {
+                Checkpoint::InputNeeded(s) => feed(s, Some(t)),
+                _ => panic!("rejected too early"),
+            };
+        }
+        assert!(matches!(
+            cp,
+            Checkpoint::Rejected(_, ParseError::UnexpectedToken { token: Tok::Lt, .. })
+        ));
+    }
+}

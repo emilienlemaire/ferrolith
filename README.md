@@ -180,7 +180,7 @@ Add `#![parser_cfg(clonable_state)]` if you need to clone the state for speculat
 |---|---|
 | `ferrolith` | Public API: re-exports `grammar!` and the runtime types (`ParseError`, `AutomatonView`, ...) |
 | `ferrolith_macro` | Proc-macro: parses the `grammar!` DSL, builds the LR(1) automaton, emits Rust code |
-| `ferrolith_core` | Library: LR(1) construction (first sets, item sets, action and goto tables) |
+| `ferrolith_core` | Library: LR(1) construction (first sets, item sets, action and goto tables). Used by the macro only, not a runtime dependency |
 
 ## AI usage
 

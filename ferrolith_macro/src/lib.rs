@@ -68,7 +68,12 @@ pub fn grammar(input: TokenStream) -> TokenStream {
     let (default_reductions_fn, defaults) =
         gen_default_reductions_fn(&actions, n_states, n_terminals);
 
-    let actions_fn = gen_action_function(&actions, n_states, n_terminals, &defaults);
+    let actions_fn = gen_action_function(&actions, n_states, n_terminals, Some(&defaults));
+
+    let exact_actions_fn = grammar
+        .cfg
+        .expose_automaton
+        .then(|| gen_action_function(&actions, n_states, n_terminals, None));
 
     let gotos_fn = gen_goto_function(&gotos, n_states, n_nonterminals);
 
@@ -98,6 +103,8 @@ pub fn grammar(input: TokenStream) -> TokenStream {
         #expected_fn
 
         #actions_fn
+
+        #exact_actions_fn
 
         #default_reductions_fn
 
@@ -318,11 +325,17 @@ fn gen_token_enum(
     }
 }
 
+/// Emits the packed action table and its lookup function.
+///
+/// With `Some(defaults)`, entries equal to their state's default reduction are
+/// left out (the parser falls back to `__DEFAULT_REDUCTIONS`) and the function
+/// is `__action`. With `None`, every entry is kept and the function is
+/// `__action_exact`, the table behind the `action` function of `expose_automaton`.
 fn gen_action_function(
     actions: &Actions,
     n_states: usize,
     n_terminals: usize,
-    defaults: &[usize],
+    defaults: Option<&[usize]>,
 ) -> proc_macro2::TokenStream {
     fn action_to_tokens(action: Action) -> proc_macro2::TokenStream {
         match action {
@@ -336,7 +349,7 @@ fn gen_action_function(
     let mut rows = vec![];
 
     for state in 0..n_states {
-        let default_prod = defaults[state];
+        let default_prod = defaults.map(|d| d[state]);
         rows.push((state, vec![None; n_terminals]));
         for ((state_id, terminal), action) in actions {
             if *state_id != state || *action == Action::Error {
@@ -344,7 +357,7 @@ fn gen_action_function(
             }
 
             if let Action::Reduce(prod) = action
-                && *prod == default_prod
+                && Some(*prod) == default_prod
             {
                 continue;
             }
@@ -419,16 +432,36 @@ fn gen_action_function(
 
     let pack_len = packed.len();
 
-    quote! {
-        static __ACTION_DISP: [isize; #n_states] = [ #(#disp),* ];
-        static __ACTION_PACKED: [::ferrolith::action::Action; #pack_len] = [ #(#packed),* ];
-        static __ACTION_CHECK: [usize; #pack_len] = [ #(#check),* ];
+    let (disp_name, packed_name, check_name, fn_name) = if defaults.is_some() {
+        (
+            "__ACTION_DISP",
+            "__ACTION_PACKED",
+            "__ACTION_CHECK",
+            "__action",
+        )
+    } else {
+        (
+            "__EXACT_ACTION_DISP",
+            "__EXACT_ACTION_PACKED",
+            "__EXACT_ACTION_CHECK",
+            "__action_exact",
+        )
+    };
+    let disp_name = format_ident!("{}", disp_name);
+    let packed_name = format_ident!("{}", packed_name);
+    let check_name = format_ident!("{}", check_name);
+    let fn_name = format_ident!("{}", fn_name);
 
-        fn __action(state: usize, terminal: usize) -> ::ferrolith::action::Action {
-            let index = __ACTION_DISP[state] + terminal as isize;
+    quote! {
+        static #disp_name: [isize; #n_states] = [ #(#disp),* ];
+        static #packed_name: [::ferrolith::action::Action; #pack_len] = [ #(#packed),* ];
+        static #check_name: [usize; #pack_len] = [ #(#check),* ];
+
+        fn #fn_name(state: usize, terminal: usize) -> ::ferrolith::action::Action {
+            let index = #disp_name[state] + terminal as isize;
             if index >= 0 && (index as usize) < #pack_len
-                && __ACTION_CHECK[index as usize] == state {
-                __ACTION_PACKED[index as usize]
+                && #check_name[index as usize] == state {
+                #packed_name[index as usize]
             } else {
                 ::ferrolith::action::Action::Error
             }
@@ -455,11 +488,13 @@ fn gen_default_reductions_fn(
                             break;
                         }
                     },
-                    Some(Action::Shift(_)) | Some(Action::Accept) => {
+                    // An explicit `Error` is a `nonassoc` tie: reducing by default
+                    // there would accept the token the tie must reject.
+                    Some(Action::Shift(_)) | Some(Action::Accept) | Some(Action::Error) => {
                         has_non_reduce = true;
                         break;
                     }
-                    _ => {}
+                    None => {}
                 }
             }
             if has_non_reduce {
@@ -1570,8 +1605,25 @@ fn gen_automaton_view(
             states: &[#(#state_infos,)*],
         };
 
+        /// The LR(1) action for `terminal` in `state`.
+        ///
+        /// This is the exact table entry: in a state where the parser reduces
+        /// by default, it is `Reduce` only for the valid lookaheads and `Error`
+        /// for the others. See `default_reduction` for what the parser does.
         #api_vis fn action(state: usize, terminal: usize) -> ::ferrolith::action::Action {
-            __action(state, terminal)
+            __action_exact(state, terminal)
+        }
+
+        /// The production the parser reduces by in `state` whatever the next
+        /// token is, if any.
+        ///
+        /// In such a state the parser reduces without looking at the token; an
+        /// invalid token is reported by a later state, before it is shifted.
+        #api_vis fn default_reduction(state: usize) -> Option<usize> {
+            match __DEFAULT_REDUCTIONS[state] {
+                usize::MAX => None,
+                p => Some(p),
+            }
         }
 
         #api_vis fn goto(state: usize, nonterminal: usize) -> usize {
