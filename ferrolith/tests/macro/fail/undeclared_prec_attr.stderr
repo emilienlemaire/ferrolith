@@ -1,0 +1,5 @@
+error: `#[prec(Nope)]`: no precedence declared for `Nope`; add it to a `#[left]`, `#[right]` or `#[nonassoc]` declaration
+  --> tests/macro/fail/undeclared_prec_attr.rs:17:16
+   |
+17 |         #[prec(Nope)]
+   |                ^^^^

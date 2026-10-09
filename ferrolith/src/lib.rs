@@ -522,18 +522,42 @@
 //! - Equal precedence, nonassoc: parse error at runtime.
 //!
 //! A production's precedence is that of its **rightmost terminal** by default.
-//! Override it per-alternative with `#[prec(Token)]`:
+//! Override it per-alternative with `#[prec(Name)]`, where `Name` is any name listed
+//! in a precedence declaration:
 //!
-//! ```rust,ignore
-//! fn expr() -> Expr {
-//!     (Num(n))                   => Expr::Num(n),
-//!     (l @ expr, Plus, r @ expr) => Expr::Add(Box::new(l), Box::new(r)),
-//!     // `Minus` is the rightmost terminal, but unary minus must bind tighter than
-//!     // binary minus, so we override its precedence explicitly.
-//!     #[prec(UMinus)]
-//!     (Minus, e @ expr)          => Expr::Neg(Box::new(e)),
+//! ```rust
+//! # use ferrolith::grammar;
+//! # enum Token { Num(i64), Minus, Star }
+//! grammar! {
+//!     type Token = Token;
+//!
+//!     #[left(Minus)]
+//!     #[left(Star)]
+//!     #[right(UMinus)]   // pseudo-token: not a variant of `Token`
+//!
+//!     #[start]
+//!     fn expr() -> i64 {
+//!         (Num(n))                    => n,
+//!         (l @ expr, Minus, r @ expr) => l - r,
+//!         (l @ expr, Star, r @ expr)  => l * r,
+//!         // `Minus` is the rightmost terminal, which would make `-a * b` parse as
+//!         // `-(a * b)`. Unary minus must bind tighter than `Star`, so override it.
+//!         #[prec(UMinus)]
+//!         (Minus, e @ expr)           => -e,
+//!     }
 //! }
+//! # fn main() {
+//! # let tokens = [Token::Minus, Token::Num(2), Token::Star, Token::Num(3)];
+//! # assert_eq!(parse(tokens.into_iter()).unwrap(), -6);
+//! # }
 //! ```
+//!
+//! A name in a precedence declaration does not have to be a token. Such a
+//! *pseudo-token* (`UMinus` above, like bison's `%prec`) only names a precedence
+//! level for `#[prec(...)]`. Its associativity is ignored: when a production and the
+//! lookahead token have the same level, the lookahead token's associativity
+//! decides. Declaring a name that is neither a token used in a rule nor referenced
+//! by a `#[prec(...)]` is a compile-time error, which catches misspelled tokens.
 //!
 //! Unresolved shift/reduce conflicts (no precedence info on either side) produce a
 //! **compile-time warning** and default to shift. Reduce/reduce conflicts are always

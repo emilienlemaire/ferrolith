@@ -1,4 +1,4 @@
-error: Trying to declare precedence for a non-terminal symbol: `Undefined`
+error: precedence declared for `Undefined`, which is neither a token used in a rule nor referenced by a `#[prec(...)]` attribute
   --> tests/macro/fail/undefined_prec_token.rs:11:12
    |
 11 |     #[left(Undefined)]

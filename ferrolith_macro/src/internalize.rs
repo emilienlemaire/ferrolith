@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use ferrolith_core::grammar::{InternalGrammar, Production, Symbol};
+use ferrolith_core::grammar::{Assoc, InternalGrammar, PrecLevel, Production, Symbol, TerminalId};
 use proc_macro2::Span;
 use quote::format_ident;
 use syn::visit_mut::{self, VisitMut};
@@ -95,8 +95,6 @@ pub(super) fn internalize(
     inject_builtins(&mut rule_set)?;
     desargue_applications(&mut rule_set)?;
 
-    validate(&rule_set)?;
-
     for rule in rule_set.values() {
         if rule.parameters.len() == 0 {
             nonterminals.entry(rule.name.clone()).or_insert_with(|| {
@@ -109,30 +107,27 @@ pub(super) fn internalize(
 
     let mut prods = vec![];
 
-    let mut prec_table = HashMap::new();
+    let mut prec_table: HashMap<TerminalId, (PrecLevel, Assoc)> = HashMap::new();
+    let mut prec_by_name: HashMap<syn::Ident, PrecLevel> = HashMap::new();
+    let mut pseudo_token: Vec<syn::Ident> = vec![];
     let mut prec_level = 1usize;
 
     for prec in &grammar.precedences {
         for token in &prec.tokens {
-            match terminals.get(&token) {
+            prec_by_name.entry(token.clone()).or_insert(prec_level);
+            match terminals.get(token) {
                 Some(id) => {
-                    prec_table.entry(*id).or_insert_with(|| {
-                        let curr_level = prec_level;
-                        (curr_level, prec.associativity)
-                    });
+                    prec_table
+                        .entry(*id)
+                        .or_insert((prec_level, prec.associativity));
                 }
-                None => {
-                    return Err(syn::Error::new(
-                        token.span(),
-                        format!(
-                            "Trying to declare precedence for a non-terminal symbol: `{token}`"
-                        ),
-                    ));
-                }
+                None => pseudo_token.push(token.clone()),
             }
         }
         prec_level += 1;
     }
+
+    validate(&rule_set, &pseudo_token)?;
 
     let mut actions_order = vec![];
 
@@ -146,6 +141,7 @@ pub(super) fn internalize(
                         &nonterminals,
                         &terminals,
                         &prec_table,
+                        &prec_by_name,
                     )?;
                     actions_order.push((rule.name.clone(), arm_idx));
                     actions += 1;
@@ -462,6 +458,39 @@ fn nonterm_refs_in_symbol(symbol: &GrammarSymbol) -> Vec<syn::Ident> {
     }
 }
 
+fn collect_prec_refs(rules: &RuleSet) -> HashSet<syn::Ident> {
+    let mut refs = HashSet::new();
+    for rule in rules.values() {
+        for arm in &rule.arms {
+            for attr in arm.attrs.iter().filter(|a| a.path().is_ident("prec")) {
+                if let Ok(ident) = attr.parse_args::<syn::Ident>() {
+                    refs.insert(ident);
+                }
+            }
+        }
+    }
+    refs
+}
+
+fn check_unused_pseudo_tokens(pseudo: &[syn::Ident], rules: &RuleSet) -> syn::Result<()> {
+    let refs = collect_prec_refs(rules);
+    let mut err: Option<syn::Error> = None;
+    for tok in pseudo.iter().filter(|t| !refs.contains(*t)) {
+        let e = syn::Error::new(
+            tok.span(),
+            format!(
+                "precedence declared for `{tok}`, which is neither a token used in a rule \
+                nor referenced by a `#[prec(...)]` attribute"
+            ),
+        );
+        match err {
+            Some(ref mut acc) => acc.combine(e),
+            None => err = Some(e),
+        }
+    }
+    err.map_or(Ok(()), Err)
+}
+
 fn check_unreachable_rules(rules: &RuleSet, start: &syn::Ident) -> syn::Result<()> {
     let mut reachable = HashSet::new();
     let mut worklist = vec![start.clone()];
@@ -584,7 +613,7 @@ fn check_undefined_references(rules: &RuleSet) -> syn::Result<()> {
     acc.map(Err).unwrap_or(Ok(()))
 }
 
-fn validate(rules: &RuleSet) -> syn::Result<()> {
+fn validate(rules: &RuleSet, pseudo: &[syn::Ident]) -> syn::Result<()> {
     let starts: Vec<_> = rules
         .values()
         .filter(|r| r.attrs.iter().any(|attr| attr.path().is_ident("start")))
@@ -628,6 +657,17 @@ fn validate(rules: &RuleSet) -> syn::Result<()> {
                 } else {
                     acc = Some(e);
                 }
+            }
+        }
+    }
+
+    match check_unused_pseudo_tokens(pseudo, rules) {
+        Ok(()) => (),
+        Err(e) => {
+            if let Some(ref mut err) = acc {
+                err.combine(e);
+            } else {
+                acc = Some(e);
             }
         }
     }

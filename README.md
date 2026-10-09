@@ -94,6 +94,18 @@ fn expr() -> i64 {
 
 Declarations go before the first rule in the `grammar!` block. They resolve shift/reduce conflicts: higher token precedence shifts, equal precedence follows associativity. Unresolved conflicts produce a compile-time warning and default to shift; reduce/reduce conflicts are always a compile-time error.
 
+A production takes the precedence of its rightmost terminal. Override it with `#[prec(Name)]` on the alternative, where `Name` can be a token or a pseudo-token that exists only in a precedence declaration:
+
+```rust,ignore
+#[right(UMinus)]  // pseudo-token, not a variant of the token type
+
+fn expr() -> i64 {
+    // ...
+    #[prec(UMinus)]
+    (Minus, e @ expr) => -e,
+}
+```
+
 ### Built-in combinators
 
 | Combinator | Matches | Returns |

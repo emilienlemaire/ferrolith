@@ -1,0 +1,11 @@
+error: precedence declared for `Foo`, which is neither a token used in a rule nor referenced by a `#[prec(...)]` attribute
+  --> tests/macro/fail/unused_pseudo_tokens.rs:12:12
+   |
+12 |     #[left(Foo, Bar)]
+   |            ^^^
+
+error: precedence declared for `Bar`, which is neither a token used in a rule nor referenced by a `#[prec(...)]` attribute
+  --> tests/macro/fail/unused_pseudo_tokens.rs:12:17
+   |
+12 |     #[left(Foo, Bar)]
+   |                 ^^^

@@ -508,9 +508,10 @@ impl Arm {
         nonterminals: &HashMap<syn::Ident, usize>,
         terminals: &HashMap<syn::Ident, usize>,
         prec_table: &HashMap<TerminalId, (PrecLevel, Assoc)>,
+        prec_by_name: &HashMap<syn::Ident, PrecLevel>,
     ) -> syn::Result<Production> {
         let rhs = self.flatten_symbols(nonterminals, terminals)?;
-        let prec = self.resolve_prec(&rhs, prec_table, terminals)?;
+        let prec = self.resolve_prec(&rhs, prec_table, prec_by_name)?;
         Ok(Production {
             lhs: nonterminal_id,
             rhs,
@@ -523,51 +524,25 @@ impl Arm {
         &self,
         rhs: &[Symbol],
         prec_table: &HashMap<TerminalId, (PrecLevel, Assoc)>,
-        terminals: &HashMap<syn::Ident, usize>,
+        prec_by_name: &HashMap<syn::Ident, PrecLevel>,
     ) -> syn::Result<Option<PrecLevel>> {
-        match self.attrs.iter().find_map(|attr| {
-            if attr.path().is_ident("prec".into()) {
-                match attr.parse_args_with(syn::Ident::parse) {
-                    Ok(ident) => match terminals.get(&ident) {
-                        Some(id) => match prec_table.get(id) {
-                            Some((level, _)) => Some(Ok(level)),
-                            None => Some(Err(syn::Error::new(
-                                ident.span(),
-                                format!(
-                                    "The `prec` attribute was used on a symbol without any \
-                                    precedence declared: `{ident}`."
-                                ),
-                            ))),
-                        },
-                        None => Some(Err(syn::Error::new(
-                            ident.span(),
-                            format!(
-                                "The `prec` attribute was used on a symbol without any \
-                                        precedence declared: `{ident}`."
-                            ),
-                        ))),
-                    },
-                    Err(e) => Some(Err(e)),
-                }
-            } else {
-                None
-            }
-        }) {
-            Some(Ok(prec_level)) => Ok(Some(*prec_level)),
-            Some(Err(e)) => Err(e),
-            None => {
-                match rhs.iter().rev().find_map(|symbol| match symbol {
-                    Symbol::Terminal(id) => match prec_table.get(id) {
-                        Some((prec_level, _)) => Some(prec_level),
-                        None => None,
-                    },
-                    _ => None,
-                }) {
-                    Some(v) => Ok(Some(*v)),
-                    _ => Ok(None),
-                }
-            }
+        if let Some(attr) = self.attrs.iter().find(|a| a.path().is_ident("prec")) {
+            let ident: syn::Ident = attr.parse_args()?;
+            return match prec_by_name.get(&ident) {
+                Some(level) => Ok(Some(*level)),
+                None => Err(syn::Error::new(
+                    ident.span(),
+                    format!(
+                        "`#[prec({ident})]`: no precedence declared for `{ident}`; \
+                         add it to a `#[left]`, `#[right]` or `#[nonassoc]` declaration"
+                    ),
+                )),
+            };
         }
+        Ok(rhs.iter().rev().find_map(|s| match s {
+            Symbol::Terminal(id) => prec_table.get(id).map(|(l, _)| *l),
+            _ => None,
+        }))
     }
 
     fn flatten_symbols(
