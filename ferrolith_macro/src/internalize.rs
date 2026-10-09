@@ -354,6 +354,7 @@ fn expand_rule(
 
             if rule.parameters.len() == args.len() {
                 let mut new_rule = Rule {
+                    vis: syn::Visibility::Inherited,
                     attrs: rule.attrs.clone(),
                     name: new_name.clone(),
                     parameters: vec![],

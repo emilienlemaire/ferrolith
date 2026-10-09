@@ -1,0 +1,5 @@
+error: visibility is only allowed on the `#[start]` rule, where it sets the visibility of the generated parser API
+  --> tests/macro/fail/visibility_on_non_start_rule.rs:19:5
+   |
+19 |     pub(crate) fn term() -> i64 {
+   |     ^^^

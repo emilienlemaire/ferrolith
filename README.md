@@ -56,7 +56,7 @@ Add the crate to your `Cargo.toml`:
 ferrolith = "0.1"
 ```
 
-Then write a `grammar!` block anywhere in your code. The block generates `parse`, `start`, `feed`, and `Checkpoint` in the surrounding scope.
+Then write a `grammar!` block anywhere in your code. The block generates `parse`, `start`, `feed`, and `Checkpoint` in the surrounding scope, with the visibility of the `#[start]` rule: write `#[start] pub fn ...` to use the parser from another module.
 
 ## Grammar at a glance
 
@@ -83,6 +83,8 @@ fn expr() -> i64 {
 ```
 
 `l @ expr` runs the `expr` rule and binds its return value to `l`. Positional bindings (`_1`, `_2`, ...) are always available alongside named ones.
+
+The `#[start]` rule may carry a visibility (`#[start] pub fn program() -> ...`), which the generated API inherits. Without one, `parse` and friends are private to the module; other rules cannot have a visibility.
 
 ### Precedence
 

@@ -387,6 +387,44 @@
 //! Exactly one rule must be annotated with `#[start]`. That rule's return type is
 //! what `parse` returns.
 //!
+//! ### Visibility of the generated API
+//!
+//! The visibility written on the `#[start]` rule is given to everything the macro
+//! generates for you: `parse`, `start`, `feed`, `ParserState`, `Checkpoint`, and,
+//! with [`expose_automaton`](#automaton-introspection-opt-in), `AUTOMATON`, `action`
+//! and `goto`. Without a visibility they are private to the enclosing module, like
+//! any `fn`. Use `pub` or `pub(crate)` to call the parser from another module:
+//!
+//! ```rust
+//! mod parser {
+//!     use ferrolith::grammar;
+//!
+//!     pub enum Token { Num(i64), Plus }
+//!
+//!     grammar! {
+//!         type Token = Token;
+//!
+//!         #[left(Plus)]
+//!
+//!         #[start]
+//!         pub fn expr() -> i64 {
+//!             (Num(n))                   => n,
+//!             (l @ expr, Plus, r @ expr) => l + r,
+//!         }
+//!     }
+//! }
+//!
+//! # fn main() {
+//! use parser::Token;
+//! let sum = parser::parse([Token::Num(1), Token::Plus, Token::Num(2)].into_iter());
+//! assert_eq!(sum.unwrap(), 3);
+//! # }
+//! ```
+//!
+//! Keep it consistent with the start rule's return type: a `pub` parser returning a
+//! private type triggers rustc's `private_interfaces` warning. Writing a visibility
+//! on any other rule is a compile-time error.
+//!
 //! ### Referring to rules (nonterminals)
 //!
 //! A **lowercase** identifier that matches a rule name is treated as a nonterminal
@@ -910,7 +948,9 @@
 //!
 //! ## Automaton introspection (opt-in)
 //!
-//! Add `#![parser_cfg(expose_automaton)]` to expose the compiled LR automaton:
+//! Add `#![parser_cfg(expose_automaton)]` to expose the compiled LR automaton. Like
+//! the rest of the generated API, these items take the
+//! [visibility of the `#[start]` rule](#visibility-of-the-generated-api):
 //!
 //! ```rust
 //! # use ferrolith::grammar;

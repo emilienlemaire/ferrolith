@@ -25,6 +25,13 @@ mod internalize;
 pub fn grammar(input: TokenStream) -> TokenStream {
     let grammar = parse_macro_input!(input as Grammar);
 
+    let api_vis = grammar
+        .rules
+        .iter()
+        .find(|r| r.attrs.iter().any(|a| a.path().is_ident("start")))
+        .map(|r| r.vis.clone())
+        .unwrap_or(syn::Visibility::Inherited);
+
     let (internal_grammar, rule_set, error_id) = match internalize::internalize(&grammar) {
         Ok(r) => r,
         Err(e) => return e.to_compile_error().into(),
@@ -67,14 +74,14 @@ pub fn grammar(input: TokenStream) -> TokenStream {
 
     let reduce_fn = gen_reduce_function(&grammar, &internal_grammar, &rule_set);
 
-    let parse_fn = gen_parse_function(&grammar, &internal_grammar, error_id);
+    let parse_fn = gen_parse_function(&api_vis, &grammar, &internal_grammar, error_id);
 
-    let incremental_api = gen_incremental_api(&grammar, &internal_grammar);
+    let incremental_api = gen_incremental_api(&api_vis, &grammar, &internal_grammar);
 
     let automaton_view = grammar
         .cfg
         .expose_automaton
-        .then(|| gen_automaton_view(&internal_grammar, n_states, &incoming));
+        .then(|| gen_automaton_view(&api_vis, &internal_grammar, n_states, &incoming));
 
     let tokens_type = &grammar.tokens_type;
 
@@ -913,6 +920,7 @@ fn gen_reduce_function(
 }
 
 fn gen_parse_function(
+    api_vis: &syn::Visibility,
     grammar: &Grammar,
     internal_grammar: &InternalGrammar,
     error_terminal_id: Option<usize>,
@@ -1117,7 +1125,7 @@ fn gen_parse_function(
     };
 
     quote! {
-        pub fn parse(
+        #api_vis fn parse(
             mut tokens: #iter_type
         ) -> Result<#start_ret_type, ::ferrolith::ParseError<#parse_ret_ty>> {
             let mut state_stack: Vec<usize> = Vec::with_capacity(64);
@@ -1173,6 +1181,7 @@ fn gen_parse_function(
 }
 
 fn gen_incremental_api(
+    api_vis: &syn::Visibility,
     grammar: &Grammar,
     internal_grammar: &InternalGrammar,
 ) -> proc_macro2::TokenStream {
@@ -1217,7 +1226,7 @@ fn gen_incremental_api(
         /// Obtain it by calling [`start`] or by unwrapping [`Checkpoint::InputNeeded`].
         /// Pass it to [`feed`] together with the next token to advance the parse.
         #derive
-        pub struct ParserState {
+        #api_vis struct ParserState {
             pub state_stack: Vec<usize>,
             pub value_stack: Vec<__Value>,
             #payload_stack_field
@@ -1225,7 +1234,7 @@ fn gen_incremental_api(
 
         impl ParserState {
             /// Returns the numeric LR state the parser is currently in.
-            pub fn current_state(&self) -> usize {
+            #api_vis fn current_state(&self) -> usize {
                 *self.state_stack.last().unwrap()
             }
 
@@ -1233,7 +1242,7 @@ fn gen_incremental_api(
             /// without error in the current state.
             ///
             /// Equivalent to the `expected` field on [`::ferrolith::ParseError`].
-            pub fn expected_terminals(&self) -> Vec<&'static str> {
+            #api_vis fn expected_terminals(&self) -> Vec<&'static str> {
                 let mut states = self.state_stack.clone();
                 loop {
                     let state = *states.last().unwrap();
@@ -1251,7 +1260,7 @@ fn gen_incremental_api(
         }
 
         /// The result of a single parse step, returned by [`start`] and [`feed`].
-        pub enum Checkpoint {
+        #api_vis enum Checkpoint {
             /// The parser consumed the last token and is ready for the next one.
             /// Call [`feed`] with `Some(token)` for the next token, or `None` to
             /// signal end of input.
@@ -1289,7 +1298,7 @@ fn gen_incremental_api(
         ///
         /// Returns [`Checkpoint::InputNeeded`] containing the initial [`ParserState`].
         /// Feed the first token with [`feed`].
-        pub fn start() -> Checkpoint {
+        #api_vis fn start() -> Checkpoint {
             #start_fn_body
         }
     };
@@ -1400,7 +1409,7 @@ fn gen_incremental_api(
         /// Only call this with a [`ParserState`] obtained from
         /// [`Checkpoint::InputNeeded`]; calling it after acceptance or rejection is
         /// a logic error.
-        pub fn feed(mut state: ParserState, token: Option<#token_ty>) -> Checkpoint {
+        #api_vis fn feed(mut state: ParserState, token: Option<#token_ty>) -> Checkpoint {
             let terminal_id = #token_id_expr;
             loop {
                 let current_state = *state.state_stack.last().unwrap();
@@ -1508,6 +1517,7 @@ fn symbol_to_tokens(sym: &Symbol) -> proc_macro2::TokenStream {
 }
 
 fn gen_automaton_view(
+    api_vis: &syn::Visibility,
     internal_grammar: &InternalGrammar,
     n_states: usize,
     incoming: &[Option<Symbol>],
@@ -1565,7 +1575,7 @@ fn gen_automaton_view(
     quote! {
         #(#rhs_statics)*
 
-        pub static AUTOMATON: ::ferrolith::AutomatonView = ::ferrolith::AutomatonView {
+        #api_vis static AUTOMATON: ::ferrolith::AutomatonView = ::ferrolith::AutomatonView {
             n_states: #n_states,
             terminals: &[#(#terminal_names,)*],
             nonterminals: &[#(#nonterminal_names,)*],
@@ -1573,11 +1583,11 @@ fn gen_automaton_view(
             states: &[#(#state_infos,)*],
         };
 
-        pub fn action(state: usize, terminal: usize) -> ::ferrolith::action::Action {
+        #api_vis fn action(state: usize, terminal: usize) -> ::ferrolith::action::Action {
             __action(state, terminal)
         }
 
-        pub fn goto(state: usize, nonterminal: usize) -> usize {
+        #api_vis fn goto(state: usize, nonterminal: usize) -> usize {
             __goto(state, nonterminal)
         }
     }

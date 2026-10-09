@@ -1,0 +1,12 @@
+error[E0603]: function `parse` is private
+  --> tests/macro/fail/private_api_from_other_module.rs:19:21
+   |
+19 |     let _ = parser::parse([parser::Tok::Num(1)].into_iter());
+   |                     ^^^^^ private function
+   |
+note: the function `parse` is defined here
+  --> tests/macro/fail/private_api_from_other_module.rs:8:5
+   |
+ 8 |     grammar! {
+   |     ^^^^^^^^
+   = note: this error originates in the macro `grammar` (in Nightly builds, run with -Z macro-backtrace for more info)

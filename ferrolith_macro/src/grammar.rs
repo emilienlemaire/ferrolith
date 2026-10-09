@@ -35,6 +35,7 @@ pub(super) struct Arm {
 
 #[derive(Clone)]
 pub(super) struct Rule {
+    pub(super) vis: syn::Visibility,
     pub(super) attrs: Vec<syn::Attribute>,
     pub(super) name: syn::Ident,
     pub(super) parameters: Vec<syn::Ident>,
@@ -274,7 +275,7 @@ impl syn::parse::Parse for Grammar {
                         ));
                     }
                 }
-            } else if input.peek(syn::Token![fn]) {
+            } else if input.peek(syn::Token![fn]) || input.peek(syn::Token![pub]) {
                 let rule_attrs = partition_attrs(attrs, &mut precs)?;
                 rules.push(Rule::parse_with_attrs(rule_attrs, input)?);
             } else if !attrs.is_empty() {
@@ -292,6 +293,25 @@ impl syn::parse::Parse for Grammar {
 
         let tokens_type = token_type.ok_or_else(|| input.error("missing `type Token = ...`"))?;
 
+        let mut vis_err: Option<syn::Error> = None;
+        for rule in &rules {
+            let is_start = rule.attrs.iter().any(|a| a.path().is_ident("start"));
+            if !is_start && !matches!(rule.vis, syn::Visibility::Inherited) {
+                let err = syn::Error::new(
+                    rule.vis.span(),
+                    "visibility is only allowed on the `#[start]` rule, where it sets the \
+                     visibility of the generated parser API",
+                );
+                match vis_err {
+                    Some(ref mut e) => e.combine(err),
+                    None => vis_err = Some(err),
+                }
+            }
+        }
+        if let Some(err) = vis_err {
+            return Err(err);
+        }
+
         Ok(Grammar {
             tokens_type,
             payload_type,
@@ -307,6 +327,7 @@ impl Rule {
         attrs: Vec<syn::Attribute>,
         input: syn::parse::ParseStream,
     ) -> syn::Result<Self> {
+        let vis = input.parse::<syn::Visibility>()?;
         input.parse::<syn::Token![fn]>()?;
 
         let name = input.call(syn::Ident::parse)?;
@@ -334,6 +355,7 @@ impl Rule {
         }
 
         Ok(Rule {
+            vis,
             attrs,
             name,
             parameters,
