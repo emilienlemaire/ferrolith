@@ -663,3 +663,54 @@ mod clone_only_when_read {
         }
     }
 }
+
+mod no_payload_default {
+    // `Pos` does not implement `Default`: with `no_payload_default`, a grammar
+    // without empty alternatives must compile and propagate payloads normally.
+    // Non-nullable built-ins (`plus`, `sep`) are allowed.
+    use ferrolith::grammar;
+
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct Pos(u32, u32);
+
+    fn merge(a: Pos, b: Pos) -> Pos {
+        Pos(a.0, b.1)
+    }
+
+    enum Tok {
+        Num(i64),
+        Comma,
+    }
+
+    grammar! {
+        #![parser_cfg(no_payload_default, payload_merge = merge)]
+
+        type Token = Tok;
+        type Payload = Pos;
+
+        #[start]
+        fn lists() -> (Vec<Vec<i64>>, Pos) {
+            (ls @ plus(list)) => (ls, _payload),
+        }
+
+        fn list() -> Vec<i64> {
+            (xs @ sep(Comma, num)) => xs,
+        }
+
+        fn num() -> i64 {
+            (Num(n)) => n,
+        }
+    }
+
+    #[test]
+    fn payload_spans_input() {
+        let tokens = [
+            (Tok::Num(1), Pos(0, 1)),
+            (Tok::Comma, Pos(1, 2)),
+            (Tok::Num(2), Pos(2, 3)),
+        ];
+        let (ls, pos) = parse(tokens.into_iter()).unwrap();
+        assert_eq!(ls, vec![vec![1, 2]]);
+        assert_eq!(pos, Pos(0, 3));
+    }
+}

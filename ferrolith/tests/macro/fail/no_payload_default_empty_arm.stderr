@@ -1,0 +1,5 @@
+error: empty alternative in `items` needs a default payload, but `no_payload_default` is set
+  --> tests/macro/fail/no_payload_default_empty_arm.rs:15:40
+   |
+15 |         ()                          => vec![],
+   |                                        ^^^

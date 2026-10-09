@@ -107,8 +107,13 @@ pub fn grammar(input: TokenStream) -> TokenStream {
     .into()
 }
 
+/// The fallback payload expression, or `None` if there is no payload type or
+/// `no_payload_default` is set.
 fn payload_default_expr(grammar: &Grammar) -> Option<proc_macro2::TokenStream> {
     let ty = grammar.payload_type.as_ref()?;
+    if grammar.cfg.no_payload_default.is_some() {
+        return None;
+    }
     Some(match grammar.cfg.payload_default {
         Some(ref def) => quote! { #def },
         None => quote! {<#ty>::default() },
@@ -765,7 +770,10 @@ fn gen_reduce_function(
                 };
                 if grammar.payload_type.is_some() {
                     if rhs_len == 0 {
-                        let def = payload_default_expr(grammar).unwrap();
+                        // Empty alternatives are rejected during internalization
+                        // when `no_payload_default` is set.
+                        let def = payload_default_expr(grammar)
+                            .expect("empty alternative without a default payload");
                         Some(quote! {
                             _payload = #def;
                         })
@@ -946,11 +954,20 @@ fn gen_parse_function(
         }
     };
 
-    let error_payload_push = payload_default_expr(grammar).map(|def| {
+    let error_payload_push = grammar.payload_type.as_ref().map(|_| {
+        // At end of input there is no token to take a payload from: use the
+        // default, or give up on recovery when `no_payload_default` is set.
+        let eof_payload = payload_default_expr(grammar).unwrap_or_else(|| {
+            quote! {
+                return Err(::ferrolith::ParseError::UnexpectedEof {
+                    expected: error_expected,
+                })
+            }
+        });
         quote! {
             let __error_payload = match token {
                 Some((_, ref p)) => p.clone(),
-                None => #def,
+                None => #eof_payload,
             };
             payload_stack.push(__error_payload);
         }

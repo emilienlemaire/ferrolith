@@ -135,7 +135,7 @@ grammar! {
 }
 ```
 
-The payload type must implement `Clone`, and `Default` unless you provide a fallback with `payload_default = expr` in `parser_cfg`. Payloads are only cloned when an action reads a `_k_payload` that the merge also needs; with a non-`Copy` payload, write `_payload.clone()` when storing `_payload` in your result.
+The payload type must implement `Clone`, and `Default` unless you provide a fallback with `payload_default = expr` in `parser_cfg`, or disable the fallback with `no_payload_default` (empty alternatives and `star` / `opt` / `sep_opt` then become compile errors). Payloads are only cloned when an action reads a `_k_payload` that the merge also needs; with a non-`Copy` payload, write `_payload.clone()` when storing `_payload` in your result.
 
 `_k_payload` holds the payload of the k-th RHS symbol. `_payload` is the merged payload for the current production, which your action can also override before returning.
 

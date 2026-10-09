@@ -1,0 +1,17 @@
+error: `star` can match nothing, which needs a default payload, but `no_payload_default` is set
+  --> tests/macro/fail/no_payload_default_nullable_builtin.rs:16:14
+   |
+16 |         (a @ star(num), b @ opt(num), c @ sep_opt(Comma, num)) => (a, b, c),
+   |              ^^^^
+
+error: `opt` can match nothing, which needs a default payload, but `no_payload_default` is set
+  --> tests/macro/fail/no_payload_default_nullable_builtin.rs:16:29
+   |
+16 |         (a @ star(num), b @ opt(num), c @ sep_opt(Comma, num)) => (a, b, c),
+   |                             ^^^
+
+error: `sep_opt` can match nothing, which needs a default payload, but `no_payload_default` is set
+  --> tests/macro/fail/no_payload_default_nullable_builtin.rs:16:43
+   |
+16 |         (a @ star(num), b @ opt(num), c @ sep_opt(Comma, num)) => (a, b, c),
+   |                                           ^^^^^^^

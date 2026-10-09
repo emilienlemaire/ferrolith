@@ -359,3 +359,49 @@ mod trailing_error {
         ));
     }
 }
+
+mod recovery_without_payload_default {
+    // With `no_payload_default`, `error` still takes the offending token's
+    // payload, but recovery that starts at end of input gives up.
+    use ferrolith::grammar;
+
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct Pos(u32);
+
+    enum Tok {
+        Num(i64),
+        Plus,
+    }
+
+    grammar! {
+        #![parser_cfg(payload_merge_strategy = first, no_payload_default)]
+
+        type Token = Tok;
+        type Payload = Pos;
+
+        #[start]
+        fn top() -> Pos {
+            (Num(_n), Plus) => _payload,
+            (error)         => _payload,
+        }
+    }
+
+    #[test]
+    fn clean_input() {
+        let tokens = [(Tok::Num(1), Pos(3)), (Tok::Plus, Pos(4))];
+        assert_eq!(parse(tokens.into_iter()).unwrap(), Pos(3));
+    }
+
+    #[test]
+    fn error_takes_offending_token_payload() {
+        assert_eq!(parse([(Tok::Plus, Pos(5))].into_iter()).unwrap(), Pos(5));
+    }
+
+    #[test]
+    fn recovery_at_eof_fails() {
+        assert!(matches!(
+            parse(std::iter::empty()),
+            Err(ferrolith::ParseError::UnexpectedEof { .. })
+        ));
+    }
+}

@@ -63,6 +63,8 @@ pub(super) struct ParserCfg {
     pub(super) payload_merge: Option<syn::Path>,
     pub(super) payload_merge_strategy: MergeStrategy,
     pub(super) payload_default: Option<syn::Expr>,
+    /// Set by the `no_payload_default` flag; the span points at the flag.
+    pub(super) no_payload_default: Option<proc_macro2::Span>,
 }
 
 impl ParserCfg {
@@ -78,6 +80,7 @@ impl ParserCfg {
                         match ident.to_string().as_str() {
                             "expose_automaton" => self.expose_automaton = true,
                             "clonable_state" => self.clonable_state = true,
+                            "no_payload_default" => self.no_payload_default = Some(ident.span()),
                             other => {
                                 let new_err = syn::Error::new(
                                     ident.span(),
@@ -239,6 +242,13 @@ impl syn::parse::Parse for Grammar {
                     "unknown inner attribute in grammar!",
                 ));
             }
+        }
+
+        if let (Some(span), Some(_)) = (cfg.no_payload_default, &cfg.payload_default) {
+            return Err(syn::Error::new(
+                span,
+                "`no_payload_default` cannot be combined with `payload_default = ...`",
+            ));
         }
 
         loop {

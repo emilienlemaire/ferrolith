@@ -129,8 +129,8 @@
 //! ```
 //!
 //! The payload type must implement [`Clone`]. It must also implement [`Default`]
-//! unless you set `payload_default` in `#![parser_cfg(...)]` (see
-//! [Default payload for epsilon rules](#default-payload-for-epsilon-rules)): the
+//! unless you set `payload_default` or `no_payload_default` in `#![parser_cfg(...)]`
+//! (see [Default payload for epsilon rules](#default-payload-for-epsilon-rules)): the
 //! generated parser uses it for epsilon alternatives, which have no symbols to take
 //! a payload from, and for an `error` token shifted at end of input (see
 //! [Error recovery](#error-recovery)).
@@ -324,6 +324,42 @@
 //!     }
 //! #
 //! #   fn expr() -> Expr { (Num(n)) => Expr::Num(n), }
+//! }
+//! # fn main() {}
+//! ```
+//!
+//! #### Disabling the default payload
+//!
+//! If your payload has no meaningful default (a span must point somewhere), set
+//! `no_payload_default` instead. The payload type then does not need [`Default`],
+//! and the grammar must not need a fallback:
+//!
+//! - an empty alternative, or a use of a built-in that can match nothing (`star`,
+//!   `opt`, `sep_opt`), is a compile-time error;
+//! - [error recovery](#error-recovery) that starts at end of input gives up and
+//!   returns [`ParseError::UnexpectedEof`].
+//!
+//! `no_payload_default` cannot be combined with `payload_default = ...`.
+//!
+//! ```rust
+//! # use ferrolith::grammar;
+//! #[derive(Debug, Clone, Copy)]
+//! pub struct Span { start: usize, end: usize }   // no `Default`
+//! # fn merge_span(a: Span, b: Span) -> Span { Span { start: a.start, end: b.end } }
+//! # enum MyToken { Num(i64), Comma }
+//!
+//! grammar! {
+//!     #![parser_cfg(payload_merge = merge_span, no_payload_default)]
+//!
+//!     type Token   = MyToken;
+//!     type Payload = Span;
+//!
+//!     #[start]
+//!     fn items() -> Vec<i64> {
+//!         (xs @ sep(Comma, num)) => xs,   // `sep_opt` would be rejected
+//!     }
+//!
+//!     fn num() -> i64 { (Num(n)) => n, }
 //! }
 //! # fn main() {}
 //! ```

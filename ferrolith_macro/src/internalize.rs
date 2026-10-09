@@ -93,6 +93,7 @@ pub(super) fn internalize(
     let error_terminal_id = terminals.get(&format_ident!("__error__")).map(|id| *id);
 
     inject_builtins(&mut rule_set)?;
+    check_empty_arms_without_payload_default(grammar, &rule_set)?;
     desargue_applications(&mut rule_set)?;
 
     for rule in rule_set.values() {
@@ -456,6 +457,85 @@ fn nonterm_refs_in_symbol(symbol: &GrammarSymbol) -> Vec<syn::Ident> {
         GrammarSymbol::Bound { sym, .. } => nonterm_refs_in_symbol(sym),
         _ => vec![],
     }
+}
+
+/// With `no_payload_default`, an empty alternative has no symbol to take its payload
+/// from. Reject empty alternatives in user rules, and uses of the built-ins that have
+/// one (`star`, `opt`, `sep_opt`) unless the user redefined them.
+fn check_empty_arms_without_payload_default(grammar: &Grammar, rules: &RuleSet) -> syn::Result<()> {
+    use syn::spanned::Spanned;
+
+    if grammar.payload_type.is_none() || grammar.cfg.no_payload_default.is_none() {
+        return Ok(());
+    }
+
+    let user_rules: HashSet<&syn::Ident> = grammar.rules.iter().map(|r| &r.name).collect();
+    let nullable_builtins: HashSet<&syn::Ident> = rules
+        .iter()
+        .filter(|(name, rule)| {
+            !user_rules.contains(name) && rule.arms.iter().any(|arm| arm.terms.is_empty())
+        })
+        .map(|(name, _)| name)
+        .collect();
+
+    fn combine(acc: &mut Option<syn::Error>, e: syn::Error) {
+        match acc {
+            Some(acc) => acc.combine(e),
+            None => *acc = Some(e),
+        }
+    }
+
+    fn check_symbol(
+        symbol: &GrammarSymbol,
+        nullable_builtins: &HashSet<&syn::Ident>,
+        acc: &mut Option<syn::Error>,
+    ) {
+        match symbol {
+            GrammarSymbol::Bound { sym, .. } => check_symbol(sym, nullable_builtins, acc),
+            GrammarSymbol::App { name, args } => {
+                if nullable_builtins.contains(name) {
+                    combine(
+                        acc,
+                        syn::Error::new(
+                            name.span(),
+                            format!(
+                                "`{name}` can match nothing, which needs a default payload, \
+                                 but `no_payload_default` is set"
+                            ),
+                        ),
+                    );
+                }
+                for arg in args {
+                    check_symbol(arg, nullable_builtins, acc);
+                }
+            }
+            _ => (),
+        }
+    }
+
+    let mut acc = None;
+    for rule in &grammar.rules {
+        for arm in &rule.arms {
+            if arm.terms.is_empty() {
+                combine(
+                    &mut acc,
+                    syn::Error::new(
+                        arm.action.span(),
+                        format!(
+                            "empty alternative in `{}` needs a default payload, but \
+                             `no_payload_default` is set",
+                            rule.name
+                        ),
+                    ),
+                );
+            }
+            for symbol in &arm.terms {
+                check_symbol(symbol, &nullable_builtins, &mut acc);
+            }
+        }
+    }
+
+    acc.map_or(Ok(()), Err)
 }
 
 fn collect_prec_refs(rules: &RuleSet) -> HashSet<syn::Ident> {
