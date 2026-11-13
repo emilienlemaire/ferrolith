@@ -7,6 +7,9 @@ readme.workspace = true
 repository.workspace = true
 documentation.workspace = true
 homepage.workspace = true
+description = "An LR(1) parser generator driven by a `grammar!` procedural macro"
+keywords = ["parser", "parser-generator", "lr1", "grammar", "proc-macro"]
+categories = ["parsing", "compilers"]
 
 [dependencies]
 ferrolith_macro = { path = "../ferrolith_macro", version = "0.1" }

@@ -7,6 +7,9 @@ readme.workspace = true
 repository.workspace = true
 documentation.workspace = true
 homepage.workspace = true
+description = "LR(1) automaton and table construction for the ferrolith parser generator"
+keywords = ["parser", "parser-generator", "lr1", "grammar", "proc-macro"]
+categories = ["parsing", "compilers"]
 
 [dependencies]
 proc-macro2 = { version = "1.0.106", features = ["span-locations"] }

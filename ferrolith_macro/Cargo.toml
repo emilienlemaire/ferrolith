@@ -7,6 +7,9 @@ readme.workspace = true
 repository.workspace = true
 documentation.workspace = true
 homepage.workspace = true
+description = "Procedural macro implementation of the ferrolith parser generator"
+keywords = ["parser", "parser-generator", "lr1", "grammar", "proc-macro"]
+categories = ["parsing", "compilers"]
 
 [lib]
 proc-macro = true
