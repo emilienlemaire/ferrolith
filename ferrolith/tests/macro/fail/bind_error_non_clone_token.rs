@@ -5,14 +5,15 @@ enum Tok {
     Semi,
 }
 
-// The `error` pseudo-token carries no value.
+// Binding `error` keeps the offending token in the error, and the same token
+// may also end the recovery: the token type must be `Clone`.
 grammar! {
     type Token = Tok;
 
     #[start]
     fn stmt() -> i64 {
         (Num(n), Semi)    => n,
-        (e @ error, Semi) => 0,
+        (e @ error, Semi) => { let _ = e; 0 },
     }
 }
 

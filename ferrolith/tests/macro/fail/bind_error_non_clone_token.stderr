@@ -1,0 +1,11 @@
+error[E0277]: the trait bound `Tok: Clone` is not satisfied
+  --> tests/macro/fail/bind_error_non_clone_token.rs:16:10
+   |
+16 |         (e @ error, Semi) => { let _ = e; 0 },
+   |          ^ the trait `Clone` is not implemented for `Tok`
+   |
+help: consider annotating `Tok` with `#[derive(Clone)]`
+   |
+ 3 + #[derive(Clone)]
+ 4 | enum Tok {
+   |

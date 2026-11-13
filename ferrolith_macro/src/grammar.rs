@@ -440,12 +440,6 @@ impl syn::parse::Parse for GrammarSymbol {
         if input.peek(syn::Token![@]) {
             input.parse::<syn::Token![@]>()?;
             let sym = input.parse::<GrammarSymbol>()?;
-            if matches!(sym, GrammarSymbol::ErrorToken) {
-                return Err(syn::Error::new(
-                    ident.span(),
-                    "`error` cannot be bound: it carries no value",
-                ));
-            }
             return Ok(GrammarSymbol::Bound {
                 name: ident,
                 mutable,

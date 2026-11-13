@@ -152,6 +152,8 @@ fn stmt() -> Option<Stmt> {
 
 `error` is a reserved keyword in the grammar DSL. When the parser gets stuck, it walks the state stack looking for a recovery point and then discards input until it can continue.
 
+Bind it to report what went wrong: `(e @ error, Semi) => Err(e)` gives the action the `ParseError` that started the recovery (the unexpected token and the expected terminals). This requires the token type to be `Clone`.
+
 ### Incremental API
 
 ```rust,ignore

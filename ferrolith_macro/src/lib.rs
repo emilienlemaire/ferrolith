@@ -227,6 +227,42 @@ fn gen_shift_reduce_warnings(idx: usize, c: &ShiftReduceConflict) -> proc_macro2
     }
 }
 
+/// Whether an alternative binds the recovered error (`e @ error`).
+///
+/// `error` then carries a `ParseError` on the value stack, which requires the
+/// token type to be `Clone`: the offending token is kept in the error, and it
+/// is also parsed when it is the token that ends the recovery.
+fn binds_error(grammar: &Grammar) -> bool {
+    error_binding(grammar).is_some()
+}
+
+/// The name of the first binding of `error`, if any.
+fn error_binding(grammar: &Grammar) -> Option<&syn::Ident> {
+    grammar
+        .rules
+        .iter()
+        .flat_map(|rule| &rule.arms)
+        .flat_map(|arm| &arm.terms)
+        .find_map(|term| match term {
+            GrammarSymbol::Bound { name, sym, .. }
+                if matches!(**sym, GrammarSymbol::ErrorToken) =>
+            {
+                Some(name)
+            }
+            _ => None,
+        })
+}
+
+/// The `ParseError` type of the generated parser: it keeps the payload of the
+/// offending token in its own field.
+fn parse_error_ty(grammar: &Grammar) -> proc_macro2::TokenStream {
+    let token_type = &grammar.tokens_type;
+    match grammar.payload_type {
+        Some(ref ty) => quote! { ::ferrolith::ParseError<#token_type, #ty> },
+        None => quote! { ::ferrolith::ParseError<#token_type> },
+    }
+}
+
 fn gen_value_enum(
     grammar: &Grammar,
     internal_grammar: &InternalGrammar,
@@ -252,11 +288,16 @@ fn gen_value_enum(
         .cfg
         .clonable_state
         .then(|| quote! { #[derive(Clone)] });
+    let error_variant = binds_error(grammar).then(|| {
+        let err_ty = parse_error_ty(grammar);
+        quote! { T_Error(#err_ty), }
+    });
     quote! {
         #derive
         enum __Value {
             #(#non_term_variants,)*
             T_Token(#tokens_type),
+            #error_variant
             T_Unit,
         }
     }
@@ -695,6 +736,14 @@ fn gen_reduce_function(
                                         }
                                     }
                                 }
+                                GrammarSymbol::ErrorToken => {
+                                    quote! {
+                                        match #vN {
+                                            __Value::T_Error(e) => e,
+                                            _ => unreachable!(),
+                                        }
+                                    }
+                                }
                                 _ => quote! { #vN },
                             };
                             if *mutable {
@@ -971,12 +1020,7 @@ fn gen_parse_function(
         quote! { #token_type }
     };
 
-    // `ParseError` keeps the payload of the offending token in its own field.
-    let err_ty = if let Some(ref ty) = grammar.payload_type {
-        quote! { ::ferrolith::ParseError<#token_type, #ty> }
-    } else {
-        quote! { ::ferrolith::ParseError<#token_type> }
-    };
+    let err_ty = parse_error_ty(grammar);
     let unexpected_token = |expected: proc_macro2::TokenStream| {
         if grammar.payload_type.is_some() {
             quote! {
@@ -1175,6 +1219,57 @@ fn gen_parse_function(
             }
         };
 
+        // Computed before the stacks change. Without `e @ error` it is only
+        // needed when the error is reported: recovery cannot start, or it
+        // starts at end of input.
+        let error_expected = if binds_error(grammar) {
+            quote! { let error_expected = __expected_tokens(&state.state_stack); }
+        } else {
+            quote! {
+                let error_expected = if recovery_state.is_none() || terminal_id == 0 {
+                    __expected_tokens(&state.state_stack)
+                } else {
+                    Vec::new()
+                };
+            }
+        };
+
+        // The value of the `error` symbol: the error itself when an alternative
+        // binds it. The token is cloned because it may also end the recovery
+        // and be parsed.
+        let error_value = if let Some(binding) = error_binding(grammar) {
+            // Spanned at the binding, so that a token type that is not `Clone`
+            // is reported there.
+            let clone_token = quote_spanned! { binding.span() => ::core::clone::Clone::clone(t) };
+            let unexpected_token = if grammar.payload_type.is_some() {
+                quote! {
+                    Some((t, p)) => ::ferrolith::ParseError::UnexpectedToken {
+                        token: #clone_token,
+                        payload: p.clone(),
+                        expected: error_expected.clone(),
+                    }
+                }
+            } else {
+                quote! {
+                    Some(t) => ::ferrolith::ParseError::UnexpectedToken {
+                        token: #clone_token,
+                        payload: (),
+                        expected: error_expected.clone(),
+                    }
+                }
+            };
+            quote! {
+                __Value::T_Error(match &token {
+                    #unexpected_token,
+                    None => ::ferrolith::ParseError::UnexpectedEof {
+                        expected: error_expected.clone(),
+                    },
+                })
+            }
+        } else {
+            quote! { __Value::T_Unit }
+        };
+
         let err_handling = quote! {
             let mut pop_count = 0;
             let recovery_state = state.state_stack.iter().rev().cloned().find(|s|
@@ -1186,13 +1281,7 @@ fn gen_parse_function(
                 }
             );
 
-            // Only needed when the error is reported: recovery cannot start, or
-            // it starts at end of input. Computed here, before the stacks change.
-            let error_expected = if recovery_state.is_none() || terminal_id == 0 {
-                __expected_tokens(&state.state_stack)
-            } else {
-                Vec::new()
-            };
+            #error_expected
 
             if let Some(candidate) = recovery_state {
                 let new_len = state.state_stack.len() - pop_count;
@@ -1206,7 +1295,7 @@ fn gen_parse_function(
                 #payload_stack_trunc
 
                 state.state_stack.push(shift_target);
-                state.value_stack.push(__Value::T_Unit);
+                state.value_stack.push(#error_value);
                 #error_payload_push
 
                 if __can_consume(&state.state_stack, terminal_id) {

@@ -444,3 +444,239 @@ mod recovery_without_payload_default {
         ));
     }
 }
+
+mod error_binding {
+    // `e @ error` binds the `ParseError` that started the recovery.
+    use ferrolith::{ParseError, grammar};
+
+    #[derive(Debug, Clone, PartialEq)]
+    enum Tok {
+        Num(i64),
+        Plus,
+        Semi,
+    }
+
+    type Stmt = Result<i64, ParseError<Tok>>;
+
+    grammar! {
+        type Token = Tok;
+
+        #[start]
+        fn program() -> Vec<Stmt> {
+            (stmts @ star(stmt)) => stmts,
+        }
+
+        fn stmt() -> Stmt {
+            (e @ expr, Semi)    => Ok(e),
+            (e @ error, Semi)   => Err(e),
+        }
+
+        fn expr() -> i64 {
+            (Num(n))                 => n,
+            (l @ expr, Plus, Num(n)) => l + n,
+        }
+    }
+
+    fn unexpected(stmt: &Stmt) -> (&Tok, Vec<&'static str>) {
+        match stmt {
+            Err(ParseError::UnexpectedToken {
+                token, expected, ..
+            }) => {
+                let mut expected = expected.clone();
+                expected.sort();
+                (token, expected)
+            }
+            other => panic!("expected an unexpected-token error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn discarded_token_is_reported() {
+        // The second `1` breaks the statement and is discarded with the `+ 2`.
+        let tokens = [Tok::Num(1), Tok::Num(1), Tok::Plus, Tok::Num(2), Tok::Semi];
+        let stmts = parse(tokens.into_iter()).unwrap();
+        assert_eq!(stmts.len(), 1);
+        assert_eq!(unexpected(&stmts[0]), (&Tok::Num(1), vec!["Plus", "Semi"]));
+    }
+
+    #[test]
+    fn token_that_ends_recovery_is_reported_and_parsed() {
+        // `;` is unexpected after `+`, and it is also the token that completes
+        // `error ;`: it is both in the error and consumed by the parser.
+        let tokens = [Tok::Num(1), Tok::Plus, Tok::Semi, Tok::Num(5), Tok::Semi];
+        let stmts = parse(tokens.into_iter()).unwrap();
+        assert_eq!(stmts.len(), 2);
+        assert_eq!(unexpected(&stmts[0]), (&Tok::Semi, vec!["Num"]));
+        assert!(matches!(stmts[1], Ok(5)));
+    }
+
+    #[test]
+    fn each_statement_gets_its_own_error() {
+        let tokens = [
+            Tok::Plus,
+            Tok::Semi,
+            Tok::Num(1),
+            Tok::Semi,
+            Tok::Num(2),
+            Tok::Num(3),
+            Tok::Semi,
+        ];
+        let stmts = parse(tokens.into_iter()).unwrap();
+        assert_eq!(stmts.len(), 3);
+        assert_eq!(unexpected(&stmts[0]), (&Tok::Plus, vec!["<eof>", "Num"]));
+        assert!(matches!(stmts[1], Ok(1)));
+        assert_eq!(unexpected(&stmts[2]), (&Tok::Num(3), vec!["Plus", "Semi"]));
+    }
+
+    #[test]
+    fn feed_binds_the_same_error() {
+        let tokens = [Tok::Num(1), Tok::Num(1), Tok::Plus, Tok::Semi];
+        let mut cp = start();
+        for t in tokens.into_iter().map(Some).chain([None]) {
+            cp = match cp {
+                Checkpoint::InputNeeded(state) => feed(state, t),
+                _ => panic!("finished too early"),
+            };
+        }
+        let Checkpoint::Accepted(stmts) = cp else {
+            panic!("expected the input to be accepted");
+        };
+        assert_eq!(stmts.len(), 1);
+        assert_eq!(unexpected(&stmts[0]), (&Tok::Num(1), vec!["Plus", "Semi"]));
+    }
+}
+
+mod error_binding_at_eof {
+    // Recovery that completes at the end of input binds `UnexpectedEof`. The
+    // same grammar also has an unbound `error` and a `mut` binding.
+    use ferrolith::{ParseError, grammar};
+
+    #[derive(Debug, Clone, PartialEq)]
+    enum Tok {
+        Num(i64),
+        LParen,
+        RParen,
+    }
+
+    #[derive(Debug)]
+    enum Value {
+        Num(i64),
+        Group(Box<Value>),
+        BadGroup,
+        Missing(Vec<&'static str>),
+    }
+
+    grammar! {
+        type Token = Tok;
+
+        #[start]
+        fn top() -> Value {
+            (v @ value)         => v,
+            (mut e @ error)     => {
+                let ParseError::UnexpectedEof { ref mut expected } = e else {
+                    panic!("expected an end-of-input error");
+                };
+                expected.sort();
+                Value::Missing(expected.clone())
+            },
+        }
+
+        fn value() -> Value {
+            (Num(n))                        => Value::Num(n),
+            (LParen, v @ value, RParen)     => Value::Group(Box::new(v)),
+            (LParen, error, RParen)         => Value::BadGroup,
+        }
+    }
+
+    #[test]
+    fn empty_input_binds_unexpected_eof() {
+        match parse(std::iter::empty()).unwrap() {
+            Value::Missing(expected) => assert_eq!(expected, ["LParen", "Num"]),
+            other => panic!("unexpected value: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unbound_error_in_the_same_grammar() {
+        let tokens = [Tok::LParen, Tok::RParen];
+        assert!(matches!(
+            parse(tokens.into_iter()).unwrap(),
+            Value::BadGroup
+        ));
+    }
+
+    #[test]
+    fn valid_input_is_unaffected() {
+        let tokens = [Tok::LParen, Tok::Num(3), Tok::RParen];
+        match parse(tokens.into_iter()).unwrap() {
+            Value::Group(inner) => assert!(matches!(*inner, Value::Num(3))),
+            other => panic!("unexpected value: {other:?}"),
+        }
+    }
+}
+
+mod error_binding_with_payload {
+    // With a payload type, the bound error has the offending token's payload in
+    // its own field. `clonable_state` requires the stacked error to be `Clone`.
+    use ferrolith::{ParseError, grammar};
+
+    #[derive(Debug, Clone, PartialEq)]
+    enum Tok {
+        Num(i64),
+        Semi,
+    }
+
+    grammar! {
+        #![parser_cfg(payload_merge_strategy = first, clonable_state)]
+
+        type Token = Tok;
+        type Payload = usize;
+
+        #[start]
+        fn program() -> Vec<Result<i64, (Tok, usize, usize)>> {
+            (stmts @ star(stmt)) => stmts,
+        }
+
+        fn stmt() -> Result<i64, (Tok, usize, usize)> {
+            (Num(n), Semi)      => Ok(n),
+            (e @ error, Semi)   => match e {
+                // `_1_payload` is the payload of `error`: the same position.
+                ParseError::UnexpectedToken { token, payload, .. } => Err((token, payload, _1_payload)),
+                ParseError::UnexpectedEof { .. } => unreachable!(),
+            },
+        }
+    }
+
+    #[test]
+    fn payload_of_the_offending_token() {
+        let tokens = [Tok::Num(1), Tok::Semi, Tok::Num(2), Tok::Num(3), Tok::Semi];
+        let stmts = parse(tokens.into_iter().enumerate().map(|(i, t)| (t, i * 10))).unwrap();
+        assert_eq!(stmts, [Ok(1), Err((Tok::Num(3), 30, 30))]);
+    }
+
+    #[test]
+    fn state_with_a_pending_error_can_be_cloned() {
+        let mut cp = start();
+        for (i, t) in [Tok::Num(2), Tok::Num(3)].into_iter().enumerate() {
+            cp = match cp {
+                Checkpoint::InputNeeded(state) => feed(state, Some((t, i))),
+                _ => panic!("finished too early"),
+            };
+        }
+        let Checkpoint::InputNeeded(state) = cp else {
+            panic!("expected the parser to be recovering");
+        };
+        assert!(state.is_recovering());
+
+        // Both copies finish the recovery on their own.
+        for state in [state.clone(), state] {
+            let Checkpoint::InputNeeded(state) = feed(state, Some((Tok::Semi, 2))) else {
+                panic!("expected `;` to end the recovery");
+            };
+            match feed(state, None) {
+                Checkpoint::Accepted(stmts) => assert_eq!(stmts, [Err((Tok::Num(3), 1, 1))]),
+                _ => panic!("expected the input to be accepted"),
+            }
+        }
+    }
+}

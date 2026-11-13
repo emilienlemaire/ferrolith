@@ -380,7 +380,8 @@ mod expr {
 
 mod stmts {
     // Error recovery: a list of `expr ;` statements where a broken statement is
-    // skipped up to its `;`. The reference works on the `;`-separated segments.
+    // skipped up to its `;` and replaced by the error that broke it (bound with
+    // `e @ error`). The reference works on the `;`-separated segments.
     use super::Rng;
     use ferrolith::{ParseError, grammar};
 
@@ -395,18 +396,45 @@ mod stmts {
         type Token = Tok;
 
         #[start]
-        fn program() -> Vec<Option<i64>> {
+        fn program() -> Vec<Stmt> {
             (stmts @ star(stmt)) => stmts,
         }
 
-        fn stmt() -> Option<i64> {
-            (e @ expr, Semi) => Some(e),
-            (error, Semi)    => None,
+        fn stmt() -> Stmt {
+            (e @ expr, Semi)    => Ok(e),
+            (e @ error, Semi)   => Err(Recovered::from(e)),
         }
 
         fn expr() -> i64 {
             (Num(n))                 => n,
             (l @ expr, Plus, Num(n)) => l + n,
+        }
+    }
+
+    /// A statement: its value, or the error it was recovered from.
+    type Stmt = Result<i64, Recovered>;
+
+    /// The error bound by `e @ error`: the first token that could not continue
+    /// the statement, and what could have.
+    #[derive(Debug, Clone, PartialEq)]
+    struct Recovered {
+        token: Tok,
+        expected: Vec<&'static str>,
+    }
+
+    impl From<ParseError<Tok>> for Recovered {
+        fn from(e: ParseError<Tok>) -> Self {
+            match e {
+                ParseError::UnexpectedToken {
+                    token, expected, ..
+                } => Recovered {
+                    token,
+                    expected: sorted(expected),
+                },
+                // The end of input never ends a statement, so recovery cannot
+                // complete there.
+                ParseError::UnexpectedEof { .. } => unreachable!(),
+            }
         }
     }
 
@@ -434,6 +462,24 @@ mod stmts {
             }
         }
 
+        /// The terminals that can come next in a statement that is not broken.
+        fn expected(self) -> Vec<&'static str> {
+            match self {
+                Seg::Start => vec!["<eof>", "Num"],
+                Seg::AfterNum(_) => vec!["Plus", "Semi"],
+                Seg::AfterPlus(_) => vec!["Num"],
+                Seg::Broken => unreachable!(),
+            }
+        }
+
+        fn accepts(self, t: Tok) -> bool {
+            matches!(
+                (self, t),
+                (Seg::Start | Seg::AfterPlus(_), Tok::Num(_))
+                    | (Seg::AfterNum(_), Tok::Plus | Tok::Semi)
+            )
+        }
+
         /// What the parser expects at the end of input, when it is an error.
         fn expected_at_eof(self) -> Option<Vec<&'static str>> {
             match self {
@@ -445,14 +491,23 @@ mod stmts {
         }
     }
 
-    fn reference(tokens: &[Tok]) -> Result<Vec<Option<i64>>, Vec<&'static str>> {
+    fn reference(tokens: &[Tok]) -> Result<Vec<Stmt>, Vec<&'static str>> {
         let mut stmts = vec![];
         let mut seg = Seg::Start;
+        // The first error of the current statement.
+        let mut error: Option<Recovered> = None;
         for t in tokens {
+            if seg != Seg::Broken && !seg.accepts(*t) {
+                error = Some(Recovered {
+                    token: *t,
+                    expected: seg.expected(),
+                });
+            }
             if *t == Tok::Semi {
-                stmts.push(match seg {
-                    Seg::AfterNum(sum) => Some(sum),
-                    _ => None,
+                stmts.push(match (error.take(), seg) {
+                    (Some(e), _) => Err(e),
+                    (None, Seg::AfterNum(sum)) => Ok(sum),
+                    (None, _) => unreachable!(),
                 });
             }
             seg = seg.advance(*t);
@@ -498,7 +553,7 @@ mod stmts {
             let tokens = generate(&mut rng);
             let expected = reference(&tokens);
             match &expected {
-                Ok(stmts) if stmts.contains(&None) => recovered += 1,
+                Ok(stmts) if stmts.iter().any(Result::is_err) => recovered += 1,
                 Ok(_) => valid += 1,
                 Err(_) => invalid += 1,
             }

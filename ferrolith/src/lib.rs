@@ -755,14 +755,65 @@
 //! ```
 //!
 //! `error` is a reserved keyword in the grammar DSL; it cannot be used as a
-//! binding name or rule name. It takes no binding and carries no value.
+//! binding name or rule name.
+//!
+//! ### Reporting recovered errors
+//!
+//! A parse that recovers succeeds, so the errors it went through are not in the
+//! result of `parse` unless your actions put them there. Bind `error` to get the
+//! [`ParseError`] that started the recovery: the unexpected token (or the end of
+//! input) and the terminals that were expected instead.
+//!
+//! ```rust
+//! # use ferrolith::{grammar, ParseError};
+//! #[derive(Debug, Clone)]
+//! enum Token { Num(i64), Semi }
+//!
+//! grammar! {
+//!     type Token = Token;
+//!
+//!     #[start]
+//!     fn program() -> Vec<Result<i64, ParseError<Token>>> {
+//!         (stmts @ star(stmt)) => stmts,
+//!     }
+//!
+//!     fn stmt() -> Result<i64, ParseError<Token>> {
+//!         (Num(n), Semi)    => Ok(n),
+//!         (e @ error, Semi) => Err(e),
+//!     }
+//! }
+//!
+//! # fn main() {
+//! let tokens = [Token::Num(1), Token::Semi, Token::Semi, Token::Num(2), Token::Semi];
+//! let stmts = parse(tokens.into_iter()).unwrap();
+//!
+//! assert!(matches!(stmts[0], Ok(1)));
+//! // The second statement is empty: `Semi` was found where `Num` was expected.
+//! match &stmts[1] {
+//!     Err(ParseError::UnexpectedToken { token: Token::Semi, expected, .. }) => {
+//!         assert!(expected.contains(&"Num"));
+//!     }
+//!     other => panic!("unexpected statement: {other:?}"),
+//! }
+//! assert!(matches!(stmts[2], Ok(2)));
+//! # }
+//! ```
+//!
+//! The error is the one `parse` would have returned without the `error`
+//! alternative. Tokens discarded afterwards, while the parser looks for a sync
+//! token, are not reported.
+//!
+//! Binding `error` requires the token type to be [`Clone`]: the unexpected token
+//! is kept in the error, and when it is also the sync token (`Semi` above) the
+//! parser still consumes it. An unbound `error` has no such requirement and
+//! carries no value.
 //!
 //! `error` can also end an alternative, as in `(error) => None`. The tokens that
 //! may follow the rule then act as sync tokens: in a list such as
 //! `(mut ss @ stmts, s @ stmt, Semi)`, recovery inside `stmt` discards input up to
 //! the next `Semi`.
 //!
-//! With a [payload type](#token-payload), `error` does carry a payload: the payload
+//! With a [payload type](#token-payload), `error` also carries a payload: the payload
 //! of the token that triggered recovery, or the [default payload](#default-payload-for-epsilon-rules)
 //! when recovery starts at end of input. Read it as `_k_payload` like any other
 //! symbol, for instance to report where the error happened.
@@ -1148,6 +1199,7 @@ pub struct AutomatonView {
 /// `ParseError<T, P>` implements [`std::fmt::Display`] when `T: Display`, and
 /// [`std::error::Error`] under the same bound, whatever the payload type: the
 /// message does not include the payload.
+#[derive(Clone)]
 pub enum ParseError<T, P = ()> {
     /// The parser received a token it did not expect in the current state.
     UnexpectedToken {
