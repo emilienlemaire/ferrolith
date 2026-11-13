@@ -142,8 +142,7 @@ mod stmt_recovery {
     #[test]
     fn unknown_variant_discarded_by_recovery() {
         assert_eq!(
-            parse([Tok::Num(1), Tok::Bang, Tok::Semi, Tok::Num(2), Tok::Semi].into_iter())
-                .unwrap(),
+            parse([Tok::Num(1), Tok::Bang, Tok::Semi, Tok::Num(2), Tok::Semi].into_iter()).unwrap(),
             vec![None, Some(2)]
         );
     }
@@ -319,7 +318,10 @@ mod payload_recovery_at_eof {
 
     #[test]
     fn clean_input() {
-        assert_eq!(parse([(Tok::Num(1), 3u32), (Tok::Plus, 4)].into_iter()).unwrap(), 3);
+        assert_eq!(
+            parse([(Tok::Num(1), 3u32), (Tok::Plus, 4)].into_iter()).unwrap(),
+            3
+        );
     }
 
     #[test]

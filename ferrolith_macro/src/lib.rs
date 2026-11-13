@@ -1,10 +1,10 @@
-use std::{collections::HashSet, usize};
+use std::collections::HashSet;
 
 use ferrolith_core::{
     automaton,
     first::FirstSet,
     grammar::{InternalGrammar, Symbol},
-    table::{self, Action, Actions, Gotos, ShiftReduceConflict},
+    table::{self, Action, Actions, Gotos, ShiftReduceConflict, Tables},
 };
 use heck::ToPascalCase;
 use proc_macro::TokenStream;
@@ -44,11 +44,16 @@ pub fn grammar(input: TokenStream) -> TokenStream {
         Err(e) => return e.to_compile_error().into(),
     };
 
-    let (actions, gotos, n_states, incoming, conflicts) =
-        match table::build_tables(automaton, &internal_grammar) {
-            Ok(t) => t,
-            Err(e) => return e.into_compile_error().into(),
-        };
+    let Tables {
+        actions,
+        gotos,
+        n_states,
+        incoming,
+        conflicts,
+    } = match table::build_tables(automaton, &internal_grammar) {
+        Ok(t) => t,
+        Err(e) => return e.into_compile_error().into(),
+    };
 
     let warnings: Vec<_> = conflicts
         .iter()
@@ -274,7 +279,7 @@ fn collect_capture_terminals(grammar: &Grammar) -> HashSet<syn::Ident> {
     for rule in &grammar.rules {
         for arm in &rule.arms {
             for symbol in &arm.terms {
-                collect_symbol(&symbol, &mut captures);
+                collect_symbol(symbol, &mut captures);
             }
         }
     }
@@ -356,7 +361,7 @@ fn gen_action_function(
                 continue;
             }
 
-            rows[state].1[*terminal] = Some(action.clone());
+            rows[state].1[*terminal] = Some(*action);
         }
     }
 
@@ -380,13 +385,7 @@ fn gen_action_function(
         let terminals: Vec<_> = row
             .iter()
             .enumerate()
-            .filter_map(|(idx, action)| {
-                if let Some(action) = action {
-                    Some((idx, action))
-                } else {
-                    None
-                }
-            })
+            .filter_map(|(idx, action)| action.as_ref().map(|action| (idx, action)))
             .collect();
 
         let min_t = terminals[0].0 as isize;
@@ -419,7 +418,7 @@ fn gen_action_function(
                     check.push(usize::MAX);
                 }
             }
-            packed[slot] = action_to_tokens(action.clone());
+            packed[slot] = action_to_tokens(*action);
             check[slot] = state;
         }
     }
@@ -543,13 +542,7 @@ fn gen_goto_function(
         let nonterminals: Vec<_> = row
             .iter()
             .enumerate()
-            .filter_map(|(idx, dest)| {
-                if let Some(dest) = dest {
-                    Some((idx, **dest))
-                } else {
-                    None
-                }
-            })
+            .filter_map(|(idx, dest)| dest.as_ref().map(|dest| (idx, **dest)))
             .collect();
 
         let min_nt = nonterminals[0].0 as isize;
@@ -725,14 +718,7 @@ fn gen_reduce_function(
                             .iter()
                             .position(|id| id == ident);
                         let ret_type = nonterm_idx
-                            .map(|idx| {
-                                internal_grammar
-                                    .ret_types
-                                    .get(idx)
-                                    .map(|o| o.clone())
-                                    .flatten()
-                            })
-                            .flatten();
+                            .and_then(|idx| internal_grammar.ret_types.get(idx).cloned().flatten());
                         match ret_type {
                             Some(_) => {
                                 let variant_ident =
@@ -786,13 +772,11 @@ fn gen_reduce_function(
                 });
             }
             let payload_decl = {
-                if let Some(ref ty) = grammar.payload_type {
-                    Some(quote! {
+                grammar.payload_type.as_ref().map(|ty| {
+                    quote! {
                         let mut _payload : #ty;
-                    })
-                } else {
-                    None
-                }
+                    }
+                })
             };
             let payload_merge = {
                 let action_tokens = arm.action.to_token_stream();
@@ -892,7 +876,7 @@ fn gen_reduce_function(
                     quote! {
                         #payload_decl
                         #payload_merge
-                        #action;
+                        let _ = #action;
                         (__Value::#lhs_variant, _payload)
                     }
                 }
@@ -903,7 +887,7 @@ fn gen_reduce_function(
                 }
                 (false, false) => {
                     quote! {
-                        #action;
+                        let _ = #action;
                         __Value::#lhs_variant
                     }
                 }
@@ -1355,13 +1339,11 @@ fn gen_incremental_api(
         .clonable_state
         .then(|| quote! { #[derive(Clone)] });
 
-    let payload_stack_field = if let Some(ref ty) = grammar.payload_type {
-        Some(quote! {
+    let payload_stack_field = grammar.payload_type.as_ref().map(|ty| {
+        quote! {
             pub payload_stack: Vec<#ty>,
-        })
-    } else {
-        None
-    };
+        }
+    });
 
     // Type arguments of `ParseError`: the token, and the payload when there is one.
     let checkpoint_err_ty = if let Some(ref ty) = grammar.payload_type {

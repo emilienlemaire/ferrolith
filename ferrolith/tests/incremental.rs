@@ -248,7 +248,10 @@ mod unknown_variant {
             cp,
             Checkpoint::Rejected(
                 _,
-                ferrolith::ParseError::UnexpectedToken { token: Tok::Minus, .. }
+                ferrolith::ParseError::UnexpectedToken {
+                    token: Tok::Minus,
+                    ..
+                }
             )
         ));
     }

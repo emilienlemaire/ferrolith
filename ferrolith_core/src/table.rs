@@ -36,16 +36,18 @@ pub struct ShiftReduceConflict {
     pub terminal_name: String,
 }
 
-pub fn build_tables(
-    automaton: Automaton,
-    grammar: &InternalGrammar,
-) -> syn::Result<(
-    Actions,
-    Gotos,
-    usize,
-    Vec<Option<Symbol>>,
-    Vec<ShiftReduceConflict>,
-)> {
+/// The result of [`build_tables`].
+pub struct Tables {
+    pub actions: Actions,
+    pub gotos: Gotos,
+    pub n_states: usize,
+    /// The symbol whose transition leads to each state; `None` for state 0.
+    pub incoming: Vec<Option<Symbol>>,
+    /// Shift/reduce conflicts that no precedence declaration resolved.
+    pub conflicts: Vec<ShiftReduceConflict>,
+}
+
+pub fn build_tables(automaton: Automaton, grammar: &InternalGrammar) -> syn::Result<Tables> {
     let Automaton {
         states,
         transitions,
@@ -57,7 +59,7 @@ pub fn build_tables(
     // State 0 has no incoming symbol (it's the initial state).
     let mut incoming: Vec<Option<Symbol>> = vec![None; n_states];
     for ((_, sym), &dest) in &transitions {
-        incoming[dest] = Some(sym.clone());
+        incoming[dest] = Some(*sym);
     }
     let mut actions: Actions = HashMap::new();
     let mut gotos: Gotos = HashMap::new();
@@ -108,7 +110,13 @@ pub fn build_tables(
         }
     }
 
-    Ok((actions, gotos, n_states, incoming, conflicts))
+    Ok(Tables {
+        actions,
+        gotos,
+        n_states,
+        incoming,
+        conflicts,
+    })
 }
 
 fn try_insert(
@@ -327,7 +335,7 @@ mod tests {
         let s4 = automaton.transitions[&(s1, Symbol::Terminal(1))]; // after E+
         let s5 = automaton.transitions[&(s4, Symbol::NonTerminal(2))]; // after E+T
 
-        let (actions, gotos, _, _, _) = build_tables(automaton, &grammar).unwrap();
+        let Tables { actions, gotos, .. } = build_tables(automaton, &grammar).unwrap();
 
         ((actions, gotos), [s0, s1, s2, s3, s4, s5])
     }

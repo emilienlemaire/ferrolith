@@ -71,7 +71,7 @@ pub(crate) fn goto(
     first: &FirstSet,
 ) -> State {
     let mut items = state
-        .into_iter()
+        .iter()
         .filter(|item| {
             // No need for bound check here since `item.prod` is always a valid production id
             if let Some(prod_symbol) = grammar.productions[item.prod].rhs.get(item.dot) {
@@ -127,7 +127,7 @@ pub fn build_automaton(grammar: &InternalGrammar, first: &FirstSet) -> syn::Resu
                     id
                 };
                 if let Some(start_id) = sets_id.get(&state) {
-                    transitions.insert((*start_id, symbol.clone()), dest_id);
+                    transitions.insert((*start_id, *symbol), dest_id);
                 } else {
                     return Err(syn::Error::new(
                         Span::call_site(),

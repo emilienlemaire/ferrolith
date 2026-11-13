@@ -22,9 +22,9 @@ struct Span {
 fn merge_span(first: Span, last: Span) -> Span {
     Span {
         start_line: first.start_line,
-        start_col:  first.start_col,
-        end_line:   last.end_line,
-        end_col:    last.end_col,
+        start_col: first.start_col,
+        end_line: last.end_line,
+        end_col: last.end_col,
     }
 }
 
@@ -35,9 +35,9 @@ fn span_of(buf: &LexBuf) -> Span {
     let loc = buf.location();
     Span {
         start_line: loc.start.line,
-        start_col:  loc.start.col,
-        end_line:   loc.end.line,
-        end_col:    loc.end.col,
+        start_col: loc.start.col,
+        end_line: loc.end.line,
+        end_col: loc.end.col,
     }
 }
 
@@ -69,10 +69,10 @@ enum Expr {
 impl Expr {
     fn span(&self) -> Span {
         match self {
-            Expr::Num(_, s)       => *s,
-            Expr::Bool(_, s)      => *s,
-            Expr::Var(_, s)       => *s,
-            Expr::Neg(_, s)       => *s,
+            Expr::Num(_, s) => *s,
+            Expr::Bool(_, s) => *s,
+            Expr::Var(_, s) => *s,
+            Expr::Neg(_, s) => *s,
             Expr::BinOp(_, _, _, s) => *s,
         }
     }
@@ -218,10 +218,10 @@ grammar! {
 
 fn eval(expr: &Expr, env: &HashMap<String, i64>) -> i64 {
     match expr {
-        Expr::Num(n, _)    => *n,
-        Expr::Bool(b, _)   => *b as i64,
+        Expr::Num(n, _) => *n,
+        Expr::Bool(b, _) => *b as i64,
         Expr::Var(name, _) => *env.get(name).unwrap_or_else(|| panic!("undefined: {name}")),
-        Expr::Neg(e, _)    => -eval(e, env),
+        Expr::Neg(e, _) => -eval(e, env),
         Expr::BinOp(op, l, r, _) => {
             let lv = eval(l, env);
             let rv = eval(r, env);
@@ -230,12 +230,12 @@ fn eval(expr: &Expr, env: &HashMap<String, i64>) -> i64 {
                 BinOp::Sub => lv - rv,
                 BinOp::Mul => lv * rv,
                 BinOp::Div => lv / rv,
-                BinOp::Eq  => (lv == rv) as i64,
-                BinOp::Ne  => (lv != rv) as i64,
-                BinOp::Lt  => (lv <  rv) as i64,
-                BinOp::Gt  => (lv >  rv) as i64,
-                BinOp::Le  => (lv <= rv) as i64,
-                BinOp::Ge  => (lv >= rv) as i64,
+                BinOp::Eq => (lv == rv) as i64,
+                BinOp::Ne => (lv != rv) as i64,
+                BinOp::Lt => (lv < rv) as i64,
+                BinOp::Gt => (lv > rv) as i64,
+                BinOp::Le => (lv <= rv) as i64,
+                BinOp::Ge => (lv >= rv) as i64,
             }
         }
     }
@@ -273,14 +273,24 @@ fn main() {
             assert_eq!(name, "a");
             assert_eq!(
                 *stmt_span,
-                Span { start_line: 1, start_col: 0, end_line: 1, end_col: 10 }
+                Span {
+                    start_line: 1,
+                    start_col: 0,
+                    end_line: 1,
+                    end_col: 10
+                }
             );
             match expr {
                 Expr::Num(n, expr_span) => {
                     assert_eq!(*n, 6);
                     assert_eq!(
                         *expr_span,
-                        Span { start_line: 1, start_col: 8, end_line: 1, end_col: 9 }
+                        Span {
+                            start_line: 1,
+                            start_col: 8,
+                            end_line: 1,
+                            end_col: 9
+                        }
                     );
                 }
                 other => panic!("expected Num, got {other:?}"),
@@ -303,7 +313,12 @@ fn main() {
             assert_eq!(name, "product");
             assert_eq!(
                 *stmt_span,
-                Span { start_line: 3, start_col: 0, end_line: 3, end_col: 20 }
+                Span {
+                    start_line: 3,
+                    start_col: 0,
+                    end_line: 3,
+                    end_col: 20
+                }
             );
             match expr {
                 Expr::BinOp(BinOp::Mul, l, r, expr_span) => {
@@ -311,7 +326,12 @@ fn main() {
                     assert!(matches!(r.as_ref(), Expr::Var(v, _) if v == "b"));
                     assert_eq!(
                         *expr_span,
-                        Span { start_line: 3, start_col: 14, end_line: 3, end_col: 19 }
+                        Span {
+                            start_line: 3,
+                            start_col: 14,
+                            end_line: 3,
+                            end_col: 19
+                        }
                     );
                 }
                 other => panic!("expected BinOp(Mul), got {other:?}"),
@@ -324,7 +344,15 @@ fn main() {
     // Confirm the printed expression carries the variable's span.
     match &program[4] {
         Stmt::Print(expr, _) => {
-            assert_eq!(expr.span(), Span { start_line: 5, start_col: 6, end_line: 5, end_col: 13 });
+            assert_eq!(
+                expr.span(),
+                Span {
+                    start_line: 5,
+                    start_col: 6,
+                    end_line: 5,
+                    end_col: 13
+                }
+            );
         }
         other => panic!("expected Print, got {other:?}"),
     }
@@ -351,12 +379,12 @@ fn main() {
     assert_eq!(env["a"], 6);
     assert_eq!(env["b"], 7);
     assert_eq!(env["product"], 42); // 6 * 7
-    assert_eq!(env["sum"], 13);     // 6 + 7
+    assert_eq!(env["sum"], 13); // 6 + 7
 
     assert_eq!(prints[0], 42); // print product;
     assert_eq!(prints[1], 13); // print sum;
-    assert_eq!(prints[2], 1);  // print product > sum;  (42 > 13 → true → 1)
-    assert_eq!(prints[3], 1);  // print product == 42;  (42 == 42 → true → 1)
+    assert_eq!(prints[2], 1); // print product > sum;  (42 > 13 → true → 1)
+    assert_eq!(prints[3], 1); // print product == 42;  (42 == 42 → true → 1)
 
     println!("\nAll assertions passed.");
 }

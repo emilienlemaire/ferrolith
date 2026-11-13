@@ -96,7 +96,7 @@ impl ParserCfg {
                         }
                     } else {
                         let new_err =
-                            syn::Error::new(path.span(), format!("unknown parser_cfg option"));
+                            syn::Error::new(path.span(), "unknown parser_cfg option".to_string());
                         if let Some(ref mut err) = err {
                             err.combine(new_err);
                         } else {
@@ -174,7 +174,7 @@ impl ParserCfg {
                     } else {
                         let new_err = syn::Error::new(
                             name_value.span(),
-                            format!("unknown parser_cfg option"),
+                            "unknown parser_cfg option".to_string(),
                         );
                         if let Some(ref mut err) = err {
                             err.combine(new_err);
@@ -185,7 +185,7 @@ impl ParserCfg {
                 }
                 syn::Meta::List(list) => {
                     let new_err =
-                        syn::Error::new(list.span(), format!("unknown parser_cfg option"));
+                        syn::Error::new(list.span(), "unknown parser_cfg option".to_string());
                     if let Some(ref mut err) = err {
                         err.combine(new_err);
                     } else {
@@ -452,7 +452,7 @@ impl syn::parse::Parse for GrammarSymbol {
 
         if ident.to_string().starts_with(|c: char| c.is_uppercase()) {
             Ok(GrammarSymbol::Token(ident))
-        } else if ident.to_string() == "error" {
+        } else if ident == "error" {
             Ok(GrammarSymbol::ErrorToken)
         } else {
             Ok(GrammarSymbol::Rule(ident))
@@ -533,7 +533,7 @@ impl TryFrom<&syn::Attribute> for PrecedenceDecl {
 }
 
 impl Arm {
-    pub(super) fn into_production(
+    pub(super) fn to_production(
         &self,
         nonterminal_id: usize,
         action_id: usize,
@@ -590,7 +590,7 @@ impl Arm {
             match symbol {
                 GrammarSymbol::Bound { sym, .. } => flatten_symbol(sym, nonterminals, terminals),
                 GrammarSymbol::Rule(ident) => {
-                    let id = nonterminals.get(&ident).ok_or_else(|| {
+                    let id = nonterminals.get(ident).ok_or_else(|| {
                         syn::Error::new(
                             ident.span(),
                             format!("Failed to find non-terminal id for `{ident}`"),
@@ -599,7 +599,7 @@ impl Arm {
                     Ok(Symbol::NonTerminal(*id))
                 }
                 GrammarSymbol::Token(ident) => {
-                    let id = terminals.get(&ident).ok_or_else(|| {
+                    let id = terminals.get(ident).ok_or_else(|| {
                         syn::Error::new(
                             ident.span(),
                             format!("Failed to find terminal id for `{ident}`"),
@@ -608,7 +608,7 @@ impl Arm {
                     Ok(Symbol::Terminal(*id))
                 }
                 GrammarSymbol::Capture { variant, .. } => {
-                    let id = terminals.get(&variant).ok_or_else(|| {
+                    let id = terminals.get(variant).ok_or_else(|| {
                         syn::Error::new(
                             variant.span(),
                             format!("Failed to find terminal id for `{variant}`"),
@@ -628,7 +628,7 @@ impl Arm {
                     let id = terminals.get(&ident).ok_or_else(|| {
                         syn::Error::new(
                             ident.span(),
-                            format!("Unable to find the `__error__` symbol"),
+                            "Unable to find the `__error__` symbol".to_string(),
                         )
                     })?;
                     Ok(Symbol::Terminal(*id))
@@ -638,7 +638,7 @@ impl Arm {
 
         let mut symbols = vec![];
         for term in &self.terms {
-            let symbol = flatten_symbol(&term, nonterminals, terminals)?;
+            let symbol = flatten_symbol(term, nonterminals, terminals)?;
             symbols.push(symbol);
         }
 

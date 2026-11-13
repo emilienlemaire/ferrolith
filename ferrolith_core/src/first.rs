@@ -24,7 +24,7 @@ impl FirstSet {
 
             for prod in prods {
                 let mut all_nullable = true;
-                if prod.rhs.len() == 0 {
+                if prod.rhs.is_empty() {
                     firsts
                         .nullable
                         .entry(prod.lhs)
