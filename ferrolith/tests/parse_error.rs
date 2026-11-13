@@ -188,7 +188,9 @@ mod unknown_variant {
     fn unknown_variant_is_unexpected_token() {
         let err = parse([Tok::Num(1), Tok::Minus].into_iter()).unwrap_err();
         match err {
-            ferrolith::ParseError::UnexpectedToken { token, expected } => {
+            ferrolith::ParseError::UnexpectedToken {
+                token, expected, ..
+            } => {
                 assert!(matches!(token, Tok::Minus));
                 assert_eq!(expected, vec!["<eof>", "Plus"]);
             }
@@ -200,7 +202,9 @@ mod unknown_variant {
     fn unknown_variant_first() {
         let err = parse([Tok::Minus].into_iter()).unwrap_err();
         match err {
-            ferrolith::ParseError::UnexpectedToken { token, expected } => {
+            ferrolith::ParseError::UnexpectedToken {
+                token, expected, ..
+            } => {
                 assert!(matches!(token, Tok::Minus));
                 assert_eq!(expected, vec!["Num"]);
             }
@@ -212,7 +216,9 @@ mod unknown_variant {
     fn unknown_variant_after_plus() {
         let err = parse([Tok::Num(1), Tok::Plus, Tok::Minus].into_iter()).unwrap_err();
         match err {
-            ferrolith::ParseError::UnexpectedToken { token, expected } => {
+            ferrolith::ParseError::UnexpectedToken {
+                token, expected, ..
+            } => {
                 assert!(matches!(token, Tok::Minus));
                 assert_eq!(expected, vec!["Num"]);
             }

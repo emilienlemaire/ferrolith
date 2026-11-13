@@ -275,6 +275,7 @@ mod expr {
                 Err(ParseError::UnexpectedToken {
                     token,
                     expected: got,
+                    ..
                 }),
                 Err((at, want)),
             ) => {

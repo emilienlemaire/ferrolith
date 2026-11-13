@@ -981,6 +981,32 @@ fn gen_parse_function(
         quote! { #token_type }
     };
 
+    // `ParseError` keeps the payload of the offending token in its own field.
+    let err_ty = if let Some(ref ty) = grammar.payload_type {
+        quote! { ::ferrolith::ParseError<#token_type, #ty> }
+    } else {
+        quote! { ::ferrolith::ParseError<#token_type> }
+    };
+    let unexpected_token = |expected: proc_macro2::TokenStream| {
+        if grammar.payload_type.is_some() {
+            quote! {
+                Some((t, p)) => ::ferrolith::ParseError::UnexpectedToken {
+                    token: t,
+                    payload: p,
+                    expected: #expected,
+                }
+            }
+        } else {
+            quote! {
+                Some(t) => ::ferrolith::ParseError::UnexpectedToken {
+                    token: t,
+                    payload: (),
+                    expected: #expected,
+                }
+            }
+        }
+    };
+
     let token_id_expr = if grammar.payload_type.is_some() {
         quote! { __token_id_opt(token.as_ref().map(|(t, _)| t)) }
     } else {
@@ -1094,12 +1120,10 @@ fn gen_parse_function(
             }
         }
     } else {
+        let unexpected_token = unexpected_token(quote! { __expected_tokens(&state_stack) });
         quote! {
             return Err(match token {
-                Some(t) => ::ferrolith::ParseError::UnexpectedToken {
-                    token: t,
-                    expected: __expected_tokens(&state_stack),
-                },
+                #unexpected_token,
                 None => ::ferrolith::ParseError::UnexpectedEof {
                     expected: __expected_tokens(&state_stack),
                 },
@@ -1108,9 +1132,10 @@ fn gen_parse_function(
     };
 
     let reject = |expected: proc_macro2::TokenStream| {
+        let unexpected_token = unexpected_token(expected.clone());
         quote! {
             return __Step::Rejected(match token {
-                Some(t) => ::ferrolith::ParseError::UnexpectedToken { token: t, expected: #expected },
+                #unexpected_token,
                 None => ::ferrolith::ParseError::UnexpectedEof { expected: #expected },
             });
         }
@@ -1226,7 +1251,7 @@ fn gen_parse_function(
         enum __Step {
             InputNeeded,
             Accepted(#start_ret_type),
-            Rejected(::ferrolith::ParseError<#tok_ty>),
+            Rejected(#err_ty),
         }
 
         /// Advances the parser by one token (`None` for end of input). Shared by
@@ -1267,7 +1292,7 @@ fn gen_parse_function(
 
         #api_vis fn parse(
             mut tokens: #iter_type
-        ) -> Result<#start_ret_type, ::ferrolith::ParseError<#tok_ty>> {
+        ) -> Result<#start_ret_type, #err_ty> {
             let mut state_stack: Vec<usize> = Vec::with_capacity(64);
             let mut value_stack: Vec<__Value> = Vec::with_capacity(64);
             #local_payload_stack
@@ -1338,14 +1363,11 @@ fn gen_incremental_api(
         None
     };
 
+    // Type arguments of `ParseError`: the token, and the payload when there is one.
     let checkpoint_err_ty = if let Some(ref ty) = grammar.payload_type {
-        quote! {
-            (#tokens_type, #ty)
-        }
+        quote! { #tokens_type, #ty }
     } else {
-        quote! {
-            #tokens_type
-        }
+        quote! { #tokens_type }
     };
 
     let types = quote! {

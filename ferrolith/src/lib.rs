@@ -178,7 +178,7 @@
 //! #       #[start]
 //! #       fn expr() -> i64 { (Num(n)) => n, }
 //! #   }
-//! #   pub fn run(tokens: Vec<Lexed>) -> Result<i64, ferrolith::ParseError<(MyToken, Span)>> {
+//! #   pub fn run(tokens: Vec<Lexed>) -> Result<i64, ferrolith::ParseError<MyToken, Span>> {
 //! #   let tokens = tokens.into_iter();
 //! // With payload:
 //! parse(tokens.map(|t| (t.kind, t.span)))
@@ -764,9 +764,9 @@
 //! ## Error handling
 //!
 //! `parse` returns `Result<T, ParseError<Token>>`. When a [payload type](#token-payload)
-//! is declared the error type becomes `ParseError<(Token, Payload)>`, so the
-//! offending token and its payload are both available. [`ParseError`] has two
-//! variants:
+//! is declared the error type becomes `ParseError<Token, Payload>`, and the
+//! payload of the offending token is in the `payload` field (it is `()` otherwise).
+//! [`ParseError`] has two variants:
 //!
 //! - [`ParseError::UnexpectedToken`]: the parser received a token it did not expect.
 //! - [`ParseError::UnexpectedEof`]: the token stream ended before the grammar was satisfied.
@@ -792,7 +792,7 @@
 //! // Without payload:
 //! match parse(tokens) {
 //!     Ok(value) => println!("parsed: {:?}", value),
-//!     Err(ferrolith::ParseError::UnexpectedToken { token, expected }) => {
+//!     Err(ferrolith::ParseError::UnexpectedToken { token, expected, .. }) => {
 //!         eprintln!("unexpected {:?}, expected one of: {}", token, expected.join(", "));
 //!     }
 //!     Err(ferrolith::ParseError::UnexpectedEof { expected }) => {
@@ -824,8 +824,8 @@
 //! # let tokens = vec![(Token::Plus, Span { start: 0, end: 1 })].into_iter();
 //! // With payload:
 //! match parse(tokens) {
-//!     Err(ferrolith::ParseError::UnexpectedToken { token: (tok, span), expected }) => {
-//!         eprintln!("at {:?}: unexpected {:?}, expected one of: {}", span, tok, expected.join(", "));
+//!     Err(ferrolith::ParseError::UnexpectedToken { token, payload: span, expected }) => {
+//!         eprintln!("at {:?}: unexpected {:?}, expected one of: {}", span, token, expected.join(", "));
 //!     }
 //!     // ...
 //! #   _ => {}
@@ -833,7 +833,10 @@
 //! # }
 //! ```
 //!
-//! `ParseError` implements `Display` (when `T: Display`) and `Error`.
+//! `ParseError` implements `Display` and `Error` when the token type is `Display`,
+//! with or without a payload. The message names the token and the expected
+//! terminals; it does not include the payload, so add the location yourself:
+//! `format!("{span:?}: {err}")`.
 //!
 //! ---
 //!
@@ -884,7 +887,7 @@
 //!
 //! When a [payload type](#token-payload) is declared, `feed` accepts
 //! `Option<(Token, Payload)>` and `Checkpoint::Rejected` carries
-//! `ParseError<(Token, Payload)>`:
+//! `ParseError<Token, Payload>`:
 //!
 //! ```rust
 //! # use ferrolith::grammar;
@@ -1103,13 +1106,20 @@ pub struct AutomatonView {
 /// that would have been valid at the point of failure. Use it to produce
 /// helpful error messages pointing the user at what the parser needed next.
 ///
-/// `ParseError<T>` implements [`std::fmt::Display`] when `T: Display`, and
-/// [`std::error::Error`] under the same bound.
-pub enum ParseError<T> {
+/// `T` is the token type and `P` the [payload type](crate#token-payload), `()`
+/// for a grammar without one.
+///
+/// `ParseError<T, P>` implements [`std::fmt::Display`] when `T: Display`, and
+/// [`std::error::Error`] under the same bound, whatever the payload type: the
+/// message does not include the payload.
+pub enum ParseError<T, P = ()> {
     /// The parser received a token it did not expect in the current state.
     UnexpectedToken {
         /// The offending token.
         token: T,
+        /// The payload that came with the offending token, typically its
+        /// location. `()` for a grammar without a payload type.
+        payload: P,
         /// Terminal names that would have been valid here.
         expected: Vec<&'static str>,
     },
@@ -1120,7 +1130,7 @@ pub enum ParseError<T> {
     },
 }
 
-impl<T> std::fmt::Debug for ParseError<T> {
+impl<T, P> std::fmt::Debug for ParseError<T, P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ParseError::UnexpectedToken { expected, .. } => f
@@ -1135,10 +1145,12 @@ impl<T> std::fmt::Debug for ParseError<T> {
     }
 }
 
-impl<T: std::fmt::Display> std::fmt::Display for ParseError<T> {
+impl<T: std::fmt::Display, P> std::fmt::Display for ParseError<T, P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ParseError::UnexpectedToken { token, expected } => {
+            ParseError::UnexpectedToken {
+                token, expected, ..
+            } => {
                 write!(f, "unexpected token {token}")?;
                 if !expected.is_empty() {
                     write!(f, ", expected one of: {}", expected.join(", "))?;
@@ -1156,4 +1168,4 @@ impl<T: std::fmt::Display> std::fmt::Display for ParseError<T> {
     }
 }
 
-impl<T: std::fmt::Display> std::error::Error for ParseError<T> {}
+impl<T: std::fmt::Display, P> std::error::Error for ParseError<T, P> {}

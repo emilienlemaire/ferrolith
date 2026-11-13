@@ -263,7 +263,8 @@ mod payload_in_parse_error {
         let err = parse(tokens.into_iter()).unwrap_err();
         match err {
             ferrolith::ParseError::UnexpectedToken {
-                token: (tok, payload),
+                token: tok,
+                payload,
                 ..
             } => {
                 assert!(matches!(tok, Tok::Num(2)));
@@ -285,7 +286,8 @@ mod payload_in_parse_error {
         let err = parse(tokens.into_iter()).unwrap_err();
         match err {
             ferrolith::ParseError::UnexpectedToken {
-                token: (tok, payload),
+                token: tok,
+                payload,
                 ..
             } => {
                 assert!(matches!(tok, Tok::Minus));
@@ -342,7 +344,8 @@ mod incremental_payload {
             Checkpoint::Rejected(
                 _,
                 ferrolith::ParseError::UnexpectedToken {
-                    token: (tok, payload),
+                    token: tok,
+                    payload,
                     ..
                 },
             ) => {
@@ -422,7 +425,11 @@ mod generic_payload {
 
     #[test]
     fn generic_payload_is_merged() {
-        let tokens = [(Tok::Num(1), None), (Tok::Plus, Some(2)), (Tok::Num(2), Some(3))];
+        let tokens = [
+            (Tok::Num(1), None),
+            (Tok::Plus, Some(2)),
+            (Tok::Num(2), Some(3)),
+        ];
         let (v, p) = parse(tokens.into_iter()).unwrap();
         assert_eq!(v, 3);
         assert_eq!(p, Some(3));
@@ -462,7 +469,9 @@ mod generic_token {
 
     #[test]
     fn feed_with_generic_token() {
-        let Checkpoint::InputNeeded(s) = start() else { panic!("expected InputNeeded") };
+        let Checkpoint::InputNeeded(s) = start() else {
+            panic!("expected InputNeeded")
+        };
         let Checkpoint::InputNeeded(s) = feed(s, Some((Tok::Num(5), 7))) else {
             panic!("expected InputNeeded after token")
         };

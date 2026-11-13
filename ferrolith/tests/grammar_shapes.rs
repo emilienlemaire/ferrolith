@@ -53,6 +53,7 @@ mod lr1_not_lalr {
             Err(ParseError::UnexpectedToken {
                 token: E,
                 mut expected,
+                ..
             }) => {
                 expected.sort();
                 assert_eq!(expected, ["A", "B"]);
@@ -379,5 +380,112 @@ mod error_display {
     #[test]
     fn valid_input_still_parses() {
         assert_eq!(run(vec![Tok::Num(1), Tok::Plus, Tok::Num(2)]).unwrap(), 3);
+    }
+}
+
+mod error_display_with_payload {
+    // With a payload type the error is `ParseError<Token, Payload>`: the payload
+    // has its own field, and the error is still `Display` and an `Error` even
+    // though the payload type is neither `Display` nor `Debug`.
+    use ferrolith::{ParseError, grammar};
+    use std::fmt;
+
+    enum Tok {
+        Num(i64),
+        Plus,
+    }
+
+    impl fmt::Display for Tok {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            match self {
+                Tok::Num(n) => write!(f, "`{n}`"),
+                Tok::Plus => write!(f, "`+`"),
+            }
+        }
+    }
+
+    #[derive(Clone, Copy, Default, PartialEq)]
+    struct Pos(usize);
+
+    grammar! {
+        #![parser_cfg(payload_merge_strategy = first)]
+
+        type Token = Tok;
+        type Payload = Pos;
+
+        #[left(Plus)]
+
+        #[start]
+        fn expr() -> i64 {
+            (Num(n))                   => n,
+            (l @ expr, Plus, r @ expr) => l + r,
+        }
+    }
+
+    fn run(tokens: Vec<Tok>) -> Result<i64, ParseError<Tok, Pos>> {
+        parse(tokens.into_iter().enumerate().map(|(i, t)| (t, Pos(i))))
+    }
+
+    #[test]
+    fn payload_has_its_own_field() {
+        match run(vec![Tok::Num(1), Tok::Plus, Tok::Plus]) {
+            Err(ParseError::UnexpectedToken {
+                token: Tok::Plus,
+                payload,
+                expected,
+            }) => {
+                assert!(payload == Pos(2));
+                assert_eq!(expected, ["Num"]);
+            }
+            _ => panic!("expected an unexpected-token error"),
+        }
+    }
+
+    #[test]
+    fn message_does_not_need_a_printable_payload() {
+        let err = run(vec![Tok::Num(1), Tok::Num(2)]).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "unexpected token `2`, expected one of: <eof>, Plus"
+        );
+        let err = run(vec![Tok::Num(1), Tok::Plus]).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "unexpected end of input, expected one of: Num"
+        );
+    }
+
+    #[test]
+    fn converts_to_a_boxed_error() {
+        fn boxed(tokens: Vec<Tok>) -> Result<i64, Box<dyn std::error::Error>> {
+            Ok(run(tokens)?)
+        }
+        assert_eq!(boxed(vec![Tok::Num(1), Tok::Plus, Tok::Num(2)]).unwrap(), 3);
+        assert!(boxed(vec![Tok::Plus]).is_err());
+    }
+
+    #[test]
+    fn feed_accepts_valid_input() {
+        let mut cp = start();
+        for t in [Some((Tok::Num(5), Pos(0))), None] {
+            cp = match cp {
+                Checkpoint::InputNeeded(state) => feed(state, t),
+                _ => panic!("finished too early"),
+            };
+        }
+        assert!(matches!(cp, Checkpoint::Accepted(5)));
+    }
+
+    #[test]
+    fn feed_reports_the_payload() {
+        let Checkpoint::InputNeeded(state) = start() else {
+            unreachable!()
+        };
+        match feed(state, Some((Tok::Plus, Pos(41)))) {
+            Checkpoint::Rejected(_, ParseError::UnexpectedToken { payload, .. }) => {
+                assert!(payload == Pos(41))
+            }
+            _ => panic!("expected a rejection"),
+        }
     }
 }
