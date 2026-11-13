@@ -1,5 +1,10 @@
 # Ferrolith
 
+[![CI](https://github.com/emilienlemaire/ferrolith/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/emilienlemaire/ferrolith/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/ferrolith.svg)](https://crates.io/crates/ferrolith)
+[![docs.rs](https://img.shields.io/docsrs/ferrolith)](https://docs.rs/ferrolith)
+[![License: LGPL-3.0-only](https://img.shields.io/crates/l/ferrolith.svg)](https://github.com/emilienlemaire/ferrolith/blob/main/LICENSE)
+
 Ferrolith is an LR(1) parser generator for Rust. You describe your grammar inside a `grammar!` macro and it gets compiled at build time into a fully typed Rust parser. No generated source files, no build scripts, nothing to check in.
 
 ```rust
