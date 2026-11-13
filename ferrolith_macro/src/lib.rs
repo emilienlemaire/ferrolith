@@ -10,7 +10,6 @@ use heck::ToPascalCase;
 use proc_macro::TokenStream;
 use proc_macro2::TokenTree;
 use quote::{ToTokens, format_ident, quote, quote_spanned};
-use syn::parse_macro_input;
 
 use crate::internalize::RuleSet;
 use crate::{
@@ -23,7 +22,15 @@ mod internalize;
 
 #[proc_macro]
 pub fn grammar(input: TokenStream) -> TokenStream {
-    let grammar = parse_macro_input!(input as Grammar);
+    expand(input.into()).into()
+}
+
+/// The whole expansion, on `proc_macro2` tokens so that it can run in unit tests.
+fn expand(input: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
+    let grammar: Grammar = match syn::parse2(input) {
+        Ok(g) => g,
+        Err(e) => return e.to_compile_error(),
+    };
 
     let api_vis = grammar
         .rules
@@ -34,14 +41,14 @@ pub fn grammar(input: TokenStream) -> TokenStream {
 
     let (internal_grammar, rule_set, error_id) = match internalize::internalize(&grammar) {
         Ok(r) => r,
-        Err(e) => return e.to_compile_error().into(),
+        Err(e) => return e.to_compile_error(),
     };
 
     let firsts = FirstSet::compute(&internal_grammar.productions);
 
     let automaton = match automaton::build_automaton(&internal_grammar, &firsts) {
         Ok(a) => a,
-        Err(e) => return e.to_compile_error().into(),
+        Err(e) => return e.to_compile_error(),
     };
 
     let Tables {
@@ -52,7 +59,7 @@ pub fn grammar(input: TokenStream) -> TokenStream {
         conflicts,
     } = match table::build_tables(automaton, &internal_grammar) {
         Ok(t) => t,
-        Err(e) => return e.into_compile_error().into(),
+        Err(e) => return e.into_compile_error(),
     };
 
     let warnings: Vec<_> = conflicts
@@ -123,7 +130,6 @@ pub fn grammar(input: TokenStream) -> TokenStream {
 
         #automaton_view
     }
-    .into()
 }
 
 /// The fallback payload expression, or `None` if there is no payload type or
@@ -1632,5 +1638,67 @@ fn gen_automaton_view(
         #api_vis fn goto(state: usize, nonterminal: usize) -> usize {
             __goto(state, nonterminal)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Expanding a grammar twice must give the same tokens: the numbering of
+    /// states, nonterminals and productions may not depend on hash-map order
+    /// (each `HashMap` has its own random seed, even within one process).
+    #[test]
+    fn expansion_is_deterministic() {
+        let source = quote! {
+            #![parser_cfg(expose_automaton)]
+
+            type Token = Tok;
+
+            #[nonassoc(Lt)]
+            #[left(Plus, Minus)]
+            #[left(Star)]
+            #[right(UMinus)]
+
+            #[start]
+            pub fn program() -> Vec<Option<i64>> {
+                (stmts @ star(stmt)) => stmts,
+            }
+
+            fn stmt() -> Option<i64> {
+                (e @ expr, Semi)                         => Some(e),
+                (Let, Ident(_name), Eq, e @ expr, Semi)  => Some(e),
+                (error, Semi)                            => None,
+            }
+
+            fn expr() -> i64 {
+                (Num(n))                                 => n,
+                (l @ expr, Lt, r @ expr)                 => (l < r) as i64,
+                (l @ expr, Plus, r @ expr)               => l + r,
+                (l @ expr, Minus, r @ expr)              => l - r,
+                (l @ expr, Star, r @ expr)               => l * r,
+                #[prec(UMinus)]
+                (Minus, e @ expr)                        => -e,
+                (LParen, e @ expr, RParen)               => e,
+                (Ident(_f), LParen, args @ sep_opt(Comma, expr), RParen) => args.len() as i64,
+                (LBracket, xs @ pair(expr, opt(expr)), RBracket) => xs,
+            }
+
+            fn pair(a, b) -> i64 {
+                (x @ a, Colon, _y @ b) => x,
+            }
+        };
+
+        let first = expand(source.clone()).to_string();
+        assert!(!first.contains("compile_error"), "{first}");
+        for _ in 0..10 {
+            assert_eq!(expand(source.clone()).to_string(), first);
+        }
+    }
+
+    #[test]
+    fn grammar_errors_expand_to_compile_errors() {
+        let expanded = expand(quote! { type Token = Tok; }).to_string();
+        assert!(expanded.contains("compile_error"), "{expanded}");
     }
 }

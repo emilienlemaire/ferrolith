@@ -1,0 +1,5 @@
+error: the `#[start]` rule needs a return type: it is what `parse` returns
+  --> tests/macro/fail/start_without_return_type.rs:12:8
+   |
+12 |     fn top() {
+   |        ^^^

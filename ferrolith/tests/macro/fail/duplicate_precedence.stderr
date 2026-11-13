@@ -1,0 +1,11 @@
+error: `Plus` already has a precedence
+  --> tests/macro/fail/duplicate_precedence.rs:13:13
+   |
+13 |     #[right(Plus)]
+   |             ^^^^
+
+error: first precedence declaration of `Plus`
+  --> tests/macro/fail/duplicate_precedence.rs:12:12
+   |
+12 |     #[left(Plus)]
+   |            ^^^^

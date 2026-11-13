@@ -1,0 +1,11 @@
+error: cannot bind `s`: rule `sep` has no return type, so it produces no value. Add `-> Type` to the rule or remove the binding
+  --> tests/macro/fail/bind_rule_without_return_type.rs:14:18
+   |
+14 |         (Num(n), s @ sep, l @ list(Semi)) => n,
+   |                  ^
+
+error: cannot bind `l`: rule `list(...)` has no return type, so it produces no value. Add `-> Type` to the rule or remove the binding
+  --> tests/macro/fail/bind_rule_without_return_type.rs:14:27
+   |
+14 |         (Num(n), s @ sep, l @ list(Semi)) => n,
+   |                           ^

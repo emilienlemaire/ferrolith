@@ -293,22 +293,49 @@ impl syn::parse::Parse for Grammar {
 
         let tokens_type = token_type.ok_or_else(|| input.error("missing `type Token = ...`"))?;
 
-        let mut vis_err: Option<syn::Error> = None;
+        let mut rule_err: Option<syn::Error> = None;
+        let mut first_def: HashMap<&syn::Ident, &syn::Ident> = HashMap::new();
         for rule in &rules {
             let is_start = rule.attrs.iter().any(|a| a.path().is_ident("start"));
+            if is_start && rule.ret_type.is_none() {
+                let err = syn::Error::new(
+                    rule.name.span(),
+                    "the `#[start]` rule needs a return type: it is what `parse` returns",
+                );
+                match rule_err {
+                    Some(ref mut e) => e.combine(err),
+                    None => rule_err = Some(err),
+                }
+            }
+            if let Some(first) = first_def.get(&rule.name) {
+                let mut err = syn::Error::new(
+                    rule.name.span(),
+                    format!("rule `{}` is defined more than once", rule.name),
+                );
+                err.combine(syn::Error::new(
+                    first.span(),
+                    format!("first definition of `{}`", rule.name),
+                ));
+                match rule_err {
+                    Some(ref mut e) => e.combine(err),
+                    None => rule_err = Some(err),
+                }
+            } else {
+                first_def.insert(&rule.name, &rule.name);
+            }
             if !is_start && !matches!(rule.vis, syn::Visibility::Inherited) {
                 let err = syn::Error::new(
                     rule.vis.span(),
                     "visibility is only allowed on the `#[start]` rule, where it sets the \
                      visibility of the generated parser API",
                 );
-                match vis_err {
+                match rule_err {
                     Some(ref mut e) => e.combine(err),
-                    None => vis_err = Some(err),
+                    None => rule_err = Some(err),
                 }
             }
         }
-        if let Some(err) = vis_err {
+        if let Some(err) = rule_err {
             return Err(err);
         }
 
@@ -413,6 +440,12 @@ impl syn::parse::Parse for GrammarSymbol {
         if input.peek(syn::Token![@]) {
             input.parse::<syn::Token![@]>()?;
             let sym = input.parse::<GrammarSymbol>()?;
+            if matches!(sym, GrammarSymbol::ErrorToken) {
+                return Err(syn::Error::new(
+                    ident.span(),
+                    "`error` cannot be bound: it carries no value",
+                ));
+            }
             return Ok(GrammarSymbol::Bound {
                 name: ident,
                 mutable,

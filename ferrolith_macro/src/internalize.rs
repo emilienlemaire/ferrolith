@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use ferrolith_core::grammar::{Assoc, InternalGrammar, PrecLevel, Production, Symbol, TerminalId};
 use proc_macro2::Span;
@@ -61,7 +61,9 @@ const BUILTIN_SOURCES: [(&str, &str); 5] = [
     ),
 ];
 
-pub(super) type RuleSet = HashMap<syn::Ident, Rule>;
+/// The rules by name. Ordered, so that nonterminals and productions are numbered
+/// the same way on every expansion.
+pub(super) type RuleSet = BTreeMap<syn::Ident, Rule>;
 
 pub(super) fn internalize(
     grammar: &Grammar,
@@ -112,9 +114,26 @@ pub(super) fn internalize(
     let mut prec_by_name: HashMap<syn::Ident, PrecLevel> = HashMap::new();
     let mut pseudo_token: Vec<syn::Ident> = vec![];
 
+    let mut prec_err: Option<syn::Error> = None;
+    let mut prec_decl: HashMap<&syn::Ident, &syn::Ident> = HashMap::new();
+
     // Levels start at 1, lowest precedence first.
     for (prec_level, prec) in (1usize..).zip(&grammar.precedences) {
         for token in &prec.tokens {
+            if let Some(first) = prec_decl.get(token) {
+                let mut e =
+                    syn::Error::new(token.span(), format!("`{token}` already has a precedence"));
+                e.combine(syn::Error::new(
+                    first.span(),
+                    format!("first precedence declaration of `{token}`"),
+                ));
+                match prec_err {
+                    Some(ref mut acc) => acc.combine(e),
+                    None => prec_err = Some(e),
+                }
+                continue;
+            }
+            prec_decl.insert(token, token);
             prec_by_name.entry(token.clone()).or_insert(prec_level);
             match terminals.get(token) {
                 Some(id) => {
@@ -125,6 +144,10 @@ pub(super) fn internalize(
                 None => pseudo_token.push(token.clone()),
             }
         }
+    }
+
+    if let Some(e) = prec_err {
+        return Err(e);
     }
 
     validate(&rule_set, &pseudo_token)?;
@@ -687,6 +710,42 @@ fn check_undefined_references(rules: &RuleSet) -> syn::Result<()> {
     acc.map(Err).unwrap_or(Ok(()))
 }
 
+/// A rule without a return type produces no value, so `x @ rule` has nothing
+/// to bind.
+fn check_bindings_of_unit_rules(rules: &RuleSet) -> syn::Result<()> {
+    let mut acc: Option<syn::Error> = None;
+    for rule in rules.values().filter(|r| r.parameters.is_empty()) {
+        for arm in &rule.arms {
+            for term in &arm.terms {
+                let GrammarSymbol::Bound { name, sym, .. } = term else {
+                    continue;
+                };
+                let (target, shown) = match &**sym {
+                    GrammarSymbol::Rule(ident) => (ident.clone(), ident.to_string()),
+                    GrammarSymbol::App { name, args } => {
+                        (app_ident(name, args), format!("{name}(...)"))
+                    }
+                    _ => continue,
+                };
+                if let Some(Rule { ret_type: None, .. }) = rules.get(&target) {
+                    let e = syn::Error::new(
+                        name.span(),
+                        format!(
+                            "cannot bind `{name}`: rule `{shown}` has no return type, so it \
+                             produces no value. Add `-> Type` to the rule or remove the binding"
+                        ),
+                    );
+                    match acc {
+                        Some(ref mut err) => err.combine(e),
+                        None => acc = Some(e),
+                    }
+                }
+            }
+        }
+    }
+    acc.map_or(Ok(()), Err)
+}
+
 fn validate(rules: &RuleSet, pseudo: &[syn::Ident]) -> syn::Result<()> {
     let starts: Vec<_> = rules
         .values()
@@ -731,6 +790,17 @@ fn validate(rules: &RuleSet, pseudo: &[syn::Ident]) -> syn::Result<()> {
                 } else {
                     acc = Some(e);
                 }
+            }
+        }
+    }
+
+    match check_bindings_of_unit_rules(rules) {
+        Ok(()) => (),
+        Err(e) => {
+            if let Some(ref mut err) = acc {
+                err.combine(e);
+            } else {
+                acc = Some(e);
             }
         }
     }

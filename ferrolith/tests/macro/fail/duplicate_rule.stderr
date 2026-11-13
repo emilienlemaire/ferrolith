@@ -1,0 +1,11 @@
+error: rule `item` is defined more than once
+  --> tests/macro/fail/duplicate_rule.rs:21:8
+   |
+21 |     fn item() -> i64 {
+   |        ^^^^
+
+error: first definition of `item`
+  --> tests/macro/fail/duplicate_rule.rs:17:8
+   |
+17 |     fn item() -> i64 {
+   |        ^^^^

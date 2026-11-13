@@ -86,36 +86,38 @@ impl FirstSet {
         }
     }
 
-    pub(crate) fn first_of_sequence(
-        &self,
-        sequence: &[Symbol],
-        lookahead: TerminalId,
-    ) -> HashSet<TerminalId> {
+    /// FIRST of a sequence of symbols, and whether the sequence can derive the
+    /// empty string.
+    pub(crate) fn first_and_nullable(&self, sequence: &[Symbol]) -> (HashSet<TerminalId>, bool) {
         let mut set = HashSet::new();
-        let mut all_nullable = true;
         for symbol in sequence {
             match symbol {
                 Symbol::Terminal(id) => {
-                    all_nullable = false;
                     set.insert(*id);
-                    break;
+                    return (set, false);
                 }
                 Symbol::NonTerminal(id) => {
                     if let Some(fs) = self.first.get(id) {
                         set.extend(fs);
                     }
-                    match self.nullable.get(id) {
-                        Some(true) => continue,
-                        _ => {
-                            all_nullable = false;
-                            break;
-                        }
+                    if self.nullable.get(id) != Some(&true) {
+                        return (set, false);
                     }
                 }
             };
         }
+        (set, true)
+    }
 
-        if all_nullable {
+    /// FIRST of `sequence` followed by `lookahead`.
+    #[cfg(test)]
+    pub(crate) fn first_of_sequence(
+        &self,
+        sequence: &[Symbol],
+        lookahead: TerminalId,
+    ) -> HashSet<TerminalId> {
+        let (mut set, nullable) = self.first_and_nullable(sequence);
+        if nullable {
             set.insert(lookahead);
         }
         set

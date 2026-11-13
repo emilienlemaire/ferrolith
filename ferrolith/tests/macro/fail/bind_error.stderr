@@ -1,0 +1,5 @@
+error: `error` cannot be bound: it carries no value
+  --> tests/macro/fail/bind_error.rs:15:10
+   |
+15 |         (e @ error, Semi) => 0,
+   |          ^

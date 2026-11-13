@@ -56,7 +56,7 @@ Add the crate to your `Cargo.toml`:
 ferrolith = "0.1"
 ```
 
-Then write a `grammar!` block anywhere in your code. The block generates `parse`, `start`, `feed`, and `Checkpoint` in the surrounding scope, with the visibility of the `#[start]` rule: write `#[start] pub fn ...` to use the parser from another module.
+Then write a `grammar!` block anywhere in your code. The block generates `parse`, `start`, `feed`, and `Checkpoint` in the surrounding scope, with the visibility of the `#[start]` rule: write `#[start] pub fn ...` to use the parser from another module. The generated names are fixed, so use one `grammar!` per module.
 
 ## Grammar at a glance
 

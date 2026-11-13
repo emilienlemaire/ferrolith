@@ -7,7 +7,7 @@ pub type StateId = usize;
 pub type PrecLevel = usize;
 pub type ActionId = usize;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Symbol {
     Terminal(TerminalId),
     NonTerminal(NonTerminalId),

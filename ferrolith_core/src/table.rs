@@ -91,14 +91,16 @@ pub fn build_tables(automaton: Automaton, grammar: &InternalGrammar) -> syn::Res
                 if prod.lhs == 0 {
                     try_insert(&mut actions, &mut conflicts, id, 0, Action::Accept, grammar)?;
                 } else {
-                    try_insert(
-                        &mut actions,
-                        &mut conflicts,
-                        id,
-                        item.lookahead,
-                        Action::Reduce(item.prod),
-                        grammar,
-                    )?;
+                    for lookahead in item.lookaheads.iter() {
+                        try_insert(
+                            &mut actions,
+                            &mut conflicts,
+                            id,
+                            lookahead,
+                            Action::Reduce(item.prod),
+                            grammar,
+                        )?;
+                    }
                 }
             }
         }
@@ -321,8 +323,8 @@ mod tests {
     }
 
     // Build tables and return ((actions, gotos), [s0..s5]).
-    // State IDs are resolved via transitions so the test is robust against
-    // non-deterministic HashSet iteration order inside build_automaton.
+    // State IDs are resolved via transitions, so the tests do not depend on
+    // the numbering.
     fn build() -> ((Actions, Gotos), [StateId; 6]) {
         let grammar = test_grammar();
         let first = FirstSet::compute(&grammar.productions);

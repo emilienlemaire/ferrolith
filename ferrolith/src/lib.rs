@@ -379,13 +379,49 @@
 //!
 //! - **`rule_name`**: a lowercase identifier; this is the nonterminal's name.
 //! - **`-> ReturnType`**: optional on non-start rules, required on the `#[start]` rule.
+//!   A rule without a return type produces no value: it can appear in an alternative
+//!   but cannot be bound (`x @ rule` is a compile-time error).
 //! - **Symbols**: a comma-separated sequence inside parentheses. An empty sequence
 //!   `()` matches the empty string (ε).
 //! - **Action**: any valid Rust expression or block, evaluated when the alternative
 //!   is reduced. Its value becomes the rule's return value.
 //!
 //! Exactly one rule must be annotated with `#[start]`. That rule's return type is
-//! what `parse` returns.
+//! what `parse` returns. Rule names are unique: defining a rule twice is a
+//! compile-time error.
+//!
+//! ### One grammar per module
+//!
+//! The generated items (`parse`, `Checkpoint`, the parse tables, ...) are placed
+//! directly in the scope of the `grammar!` block, under fixed names. To have several
+//! parsers in one crate, put each `grammar!` in its own module:
+//!
+//! ```rust
+//! # use ferrolith::grammar;
+//! # pub enum Token { Num(i64), Name(String) }
+//! mod numbers {
+//! #   use super::*;
+//!     grammar! {
+//!         type Token = Token;
+//!         #[start]
+//!         pub fn number() -> i64 { (Num(n)) => n, }
+//!     }
+//! }
+//!
+//! mod names {
+//! #   use super::*;
+//!     grammar! {
+//!         type Token = Token;
+//!         #[start]
+//!         pub fn name() -> String { (Name(s)) => s, }
+//!     }
+//! }
+//!
+//! # fn main() {
+//! assert_eq!(numbers::parse([Token::Num(4)].into_iter()).unwrap(), 4);
+//! assert_eq!(names::parse([Token::Name("x".into())].into_iter()).unwrap(), "x");
+//! # }
+//! ```
 //!
 //! ### Visibility of the generated API
 //!

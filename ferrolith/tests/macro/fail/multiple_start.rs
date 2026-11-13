@@ -9,12 +9,12 @@ grammar! {
     type Token = Tok;
 
     #[start]
-    fn rule1() {
+    fn rule1() -> () {
         (A) => (),
     }
 
     #[start]
-    fn rule2() {
+    fn rule2() -> () {
         (B) => (),
     }
 }
