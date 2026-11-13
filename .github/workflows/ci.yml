@@ -27,7 +27,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # Keep in sync with `rust-version` in the three `Cargo.toml` files.
-      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: dtolnay/rust-toolchain@1.95.0
       - uses: Swatinem/rust-cache@v2
       # Library targets only: the dev-dependencies have their own requirements.
       - run: cargo check --workspace
