@@ -152,37 +152,31 @@ fn gen_expected_tokens_fn(
         })
         .collect();
 
-    if let Some(err_id) = error_terminal_id {
+    let skip_error = error_terminal_id.map(|err_id| {
         quote! {
-            static __TERMINAL_NAMES: [&str; #len] = [#(#names,)*];
-
-            fn __expected_tokens(state: usize) -> Vec<&'static str> {
-                let mut expected = vec![];
-                for t in 0..#len {
-                    if t == #err_id {
-                        continue;
-                    } else if __action(state, t) != ::ferrolith::action::Action::Error {
-                        expected.push(__TERMINAL_NAMES[t]);
-                    }
-                }
-
-                expected
+            if t == #err_id {
+                continue;
             }
         }
-    } else {
-        quote! {
-            static __TERMINAL_NAMES: [&str; #len] = [#(#names,)*];
+    });
 
-            fn __expected_tokens(state: usize) -> Vec<&'static str> {
-                let mut expected = vec![];
-                for t in 0..#len {
-                    if __action(state, t) != ::ferrolith::action::Action::Error {
-                        expected.push(__TERMINAL_NAMES[t]);
-                    }
+    // A terminal is expected when the parser can shift it (or accept on it)
+    // after its pending reductions. Looking only at the current state's actions
+    // is not enough: a reduction on `t` can lead to a state that rejects `t`
+    // (a `nonassoc` tie).
+    quote! {
+        static __TERMINAL_NAMES: [&str; #len] = [#(#names,)*];
+
+        fn __expected_tokens(stack: &[usize]) -> Vec<&'static str> {
+            let mut expected = vec![];
+            for t in 0..#len {
+                #skip_error
+                if __can_consume(stack, t) {
+                    expected.push(__TERMINAL_NAMES[t]);
                 }
-
-                expected
             }
+
+            expected
         }
     }
 }
@@ -1104,10 +1098,10 @@ fn gen_parse_function(
             return Err(match token {
                 Some(t) => ::ferrolith::ParseError::UnexpectedToken {
                     token: t,
-                    expected: __expected_tokens(state),
+                    expected: __expected_tokens(&state_stack),
                 },
                 None => ::ferrolith::ParseError::UnexpectedEof {
-                    expected: __expected_tokens(state),
+                    expected: __expected_tokens(&state_stack),
                 },
             });
         }
@@ -1167,8 +1161,6 @@ fn gen_parse_function(
         };
 
         let err_handling = quote! {
-            let error_expected = __expected_tokens(current_state);
-
             let mut pop_count = 0;
             let recovery_state = state.state_stack.iter().rev().cloned().find(|s|
                 if let ::ferrolith::action::Action::Shift(_) = __action(*s, #err_id) {
@@ -1178,6 +1170,14 @@ fn gen_parse_function(
                     false
                 }
             );
+
+            // Only needed when the error is reported: recovery cannot start, or
+            // it starts at end of input. Computed here, before the stacks change.
+            let error_expected = if recovery_state.is_none() || terminal_id == 0 {
+                __expected_tokens(&state.state_stack)
+            } else {
+                Vec::new()
+            };
 
             if let Some(candidate) = recovery_state {
                 let new_len = state.state_stack.len() - pop_count;
@@ -1213,7 +1213,10 @@ fn gen_parse_function(
 
         (Some(recovering_check), err_handling)
     } else {
-        (None, reject(quote! { __expected_tokens(current_state) }))
+        (
+            None,
+            reject(quote! { __expected_tokens(&state.state_stack) }),
+        )
     };
 
     let iter_type = quote! { impl Iterator<Item = #tok_ty> };
@@ -1379,19 +1382,7 @@ fn gen_incremental_api(
             ///
             /// Equivalent to the `expected` field on [`::ferrolith::ParseError`].
             #api_vis fn expected_terminals(&self) -> Vec<&'static str> {
-                let mut states = self.state_stack.clone();
-                loop {
-                    let state = *states.last().unwrap();
-                    let default_prod = __DEFAULT_REDUCTIONS[state];
-                    if default_prod == usize::MAX {
-                        return __expected_tokens(state)
-                    }
-
-                    let (lhs, rhs_len) = __prod_info(default_prod);
-                    let trunc_len = states.len() - rhs_len;
-                    states.truncate(trunc_len);
-                    states.push(__goto(*states.last().unwrap(), lhs));
-                }
+                __expected_tokens(&self.state_stack)
             }
         }
 
@@ -1486,10 +1477,15 @@ fn gen_incremental_api(
     };
 
     let can_consume_fn = quote! {
+        /// Whether the parser can shift `t` (or accept on it) from `stack`,
+        /// after simulating the reductions it would perform first.
         fn __can_consume(stack: &[usize], t: usize) -> bool {
-            let mut states = stack.to_vec();
+            // The simulated stack is `stack[..base]` followed by `pushed`, so
+            // the caller's stack is not copied.
+            let mut base = stack.len();
+            let mut pushed: Vec<usize> = Vec::new();
             loop {
-                let s = *states.last().unwrap();
+                let s = pushed.last().copied().unwrap_or(stack[base - 1]);
                 let prod = match __action(s, t) {
                     ::ferrolith::action::Action::Shift(_) | ::ferrolith::action::Action::Accept => return true,
                     ::ferrolith::action::Action::Reduce(p) => p,
@@ -1499,8 +1495,11 @@ fn gen_incremental_api(
                     },
                 };
                 let (lhs, rhs_len) = __prod_info(prod);
-                states.truncate(states.len() - rhs_len);
-                states.push(__goto(*states.last().unwrap(), lhs));
+                let from_pushed = rhs_len.min(pushed.len());
+                pushed.truncate(pushed.len() - from_pushed);
+                base -= rhs_len - from_pushed;
+                let top = pushed.last().copied().unwrap_or(stack[base - 1]);
+                pushed.push(__goto(top, lhs));
             }
         }
     };
