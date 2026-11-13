@@ -2,6 +2,7 @@
 name = "ferrolith"
 version.workspace = true
 edition.workspace = true
+rust-version = "1.88"
 license.workspace = true
 readme.workspace = true
 repository.workspace = true
