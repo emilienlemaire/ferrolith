@@ -96,7 +96,7 @@ pub(super) fn internalize(
 
     inject_builtins(&mut rule_set)?;
     check_empty_arms_without_payload_default(grammar, &rule_set)?;
-    desargue_applications(&mut rule_set)?;
+    desargue_applications(&mut rule_set, &grammar.tokens_type)?;
 
     for rule in rule_set.values() {
         if rule.parameters.is_empty() {
@@ -303,7 +303,7 @@ fn get_symbol_terminal(symbol: &GrammarSymbol) -> Vec<syn::Ident> {
     terms
 }
 
-fn desargue_applications(rules: &mut RuleSet) -> syn::Result<()> {
+fn desargue_applications(rules: &mut RuleSet, tokens_type: &syn::Type) -> syn::Result<()> {
     let mut top_level_symbols = vec![];
 
     for rule in rules.values() {
@@ -318,7 +318,7 @@ fn desargue_applications(rules: &mut RuleSet) -> syn::Result<()> {
     }
 
     for symbol in top_level_symbols {
-        desargue_symbol(rules, &symbol)?;
+        desargue_symbol(rules, &symbol, tokens_type, 0)?;
     }
 
     Ok(())
@@ -332,19 +332,63 @@ fn inject_builtins(rules: &mut RuleSet) -> syn::Result<()> {
     Ok(())
 }
 
-fn desargue_symbol(rules: &mut RuleSet, symbol: &GrammarSymbol) -> syn::Result<()> {
+/// Instantiations nested deeper than this come from a rule that applies itself
+/// to an ever-growing argument (`fn f(x) { (f(g(x))) => ... }`), which would
+/// never stop expanding.
+const MAX_INSTANTIATION_DEPTH: usize = 64;
+
+fn desargue_symbol(
+    rules: &mut RuleSet,
+    symbol: &GrammarSymbol,
+    tokens_type: &syn::Type,
+    depth: usize,
+) -> syn::Result<()> {
     match symbol {
-        GrammarSymbol::Bound { sym, .. } => desargue_symbol(rules, sym),
+        GrammarSymbol::Bound { sym, .. } => desargue_symbol(rules, sym, tokens_type, depth),
         GrammarSymbol::App { name, args } => {
-            for symbol in args {
-                desargue_symbol(rules, symbol)?;
-            }
             let new_name = app_ident(name, args);
-            let new_rule = expand_rule(rules, &new_name, name, args)?;
-            rules.entry(new_name).or_insert(new_rule);
+            if rules.contains_key(&new_name) {
+                return Ok(());
+            }
+            if depth >= MAX_INSTANTIATION_DEPTH {
+                return Err(syn::Error::new(
+                    name.span(),
+                    format!(
+                        "`{name}` is instantiated more than {MAX_INSTANTIATION_DEPTH} levels \
+                         deep, does it apply itself to a growing argument?"
+                    ),
+                ));
+            }
+            for symbol in args {
+                desargue_symbol(rules, symbol, tokens_type, depth)?;
+            }
+            let new_rule = expand_rule(rules, &new_name, name, args, tokens_type)?;
+            // The body of the instance may apply other parametric rules to the
+            // arguments (`fn many(x) { (xs @ star(x)) => xs }`): instantiate those
+            // too. The instance is inserted first, so a recursive arm finds it.
+            let body: Vec<_> = new_rule
+                .arms
+                .iter()
+                .flat_map(|arm| arm.terms.clone())
+                .collect();
+            rules.insert(new_name, new_rule);
+            for symbol in &body {
+                desargue_symbol(rules, symbol, tokens_type, depth + 1)?;
+            }
             Ok(())
         }
         _ => Ok(()),
+    }
+}
+
+/// The type of the value an argument of an application produces, if known.
+fn arg_type(rules: &RuleSet, arg: &GrammarSymbol, tokens_type: &syn::Type) -> Option<syn::Type> {
+    match arg {
+        GrammarSymbol::Rule(ident) => rules.get(ident)?.ret_type.clone(),
+        GrammarSymbol::Token(_) => Some(tokens_type.clone()),
+        // Arguments are instantiated before the application that uses them.
+        GrammarSymbol::App { name, args } => rules.get(&app_ident(name, args))?.ret_type.clone(),
+        _ => None,
     }
 }
 
@@ -353,6 +397,7 @@ fn expand_rule(
     new_name: &syn::Ident,
     name: &syn::Ident,
     args: &[GrammarSymbol],
+    tokens_type: &syn::Type,
 ) -> syn::Result<Rule> {
     match rules.get(name) {
         Some(rule) => {
@@ -360,13 +405,8 @@ fn expand_rule(
                 .parameters
                 .iter()
                 .zip(args.iter())
-                .filter_map(|(param, arg)| match arg {
-                    GrammarSymbol::Rule(ident) => rules
-                        .get(ident)?
-                        .ret_type
-                        .clone()
-                        .map(|ty| (param.clone(), ty)),
-                    _ => None,
+                .filter_map(|(param, arg)| {
+                    arg_type(rules, arg, tokens_type).map(|ty| (param.clone(), ty))
                 })
                 .collect();
             let new_ret_type = rule.ret_type.clone().map(|mut ty| {

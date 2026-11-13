@@ -564,7 +564,11 @@
 //! | `sep(sep, x)` | one or more `x` separated by token `sep` | `Vec<ReturnType of x>` |
 //! | `sep_opt(sep, x)` | zero or more `x` separated by token `sep` | `Vec<ReturnType of x>` |
 //!
-//! `x` must be a rule name (nonterminal). `sep` must be a token variant (PascalCase).
+//! `x` can be a rule, a token variant or another application such as `plus(expr)`;
+//! its return type is the rule's return type, the token type (`opt(Semi)` returns
+//! `Option<Token>`) or the applied rule's return type (`opt(plus(expr))` returns
+//! `Option<Vec<ReturnType of expr>>`). The same goes for the parameters of
+//! user-defined parametric rules. `sep` must be a token variant (PascalCase).
 //!
 //! ```rust
 //! use ferrolith::grammar;
@@ -711,7 +715,10 @@
 //! are never compiled directly — only their concrete instantiations are.
 //!
 //! The return type `Vec<x>` uses the parameter name as a type placeholder; Ferrolith
-//! substitutes it with the actual return type of the argument rule.
+//! substitutes it with the type of the argument: the return type of a rule, the
+//! token type for a token variant, or the return type of an application such as
+//! `star(int)`. The body of a parametric rule can itself apply parametric rules to
+//! its parameters (`fn many(x) -> Vec<x> { (xs @ star(x)) => xs, }`).
 //!
 //! ---
 //!

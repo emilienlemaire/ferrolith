@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- The return type of a built-in or parametric rule applied to a token
+  (`opt(Semi)`) or to another application (`opt(plus(expr))`) kept the
+  parameter name (`Option<x>`) instead of the token type or the inner rule's
+  return type.
+- A parametric rule whose body applies another parametric rule to one of its
+  parameters (`fn many(x) -> Vec<x> { (xs @ star(x)) => xs }`) was never
+  instantiated, and was reported as unable to produce a value. A rule that
+  applies itself to an ever-growing argument is now a compile-time error
+  instead of an endless expansion.
+
 ## [0.1.0] - 2026-11-13
 
 First release.

@@ -1,0 +1,5 @@
+error: `nest` is instantiated more than 64 levels deep, does it apply itself to a growing argument?
+  --> tests/macro/fail/growing_instantiation.rs:12:10
+   |
+12 |         (nest(opt(x))) => (),
+   |          ^^^^
