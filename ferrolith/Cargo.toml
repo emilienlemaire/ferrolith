@@ -13,7 +13,7 @@ keywords = ["parser", "parser-generator", "lr1", "grammar", "proc-macro"]
 categories = ["parsing", "compilers"]
 
 [dependencies]
-ferrolith_macro = { path = "../ferrolith_macro", version = "0.1" }
+ferrolith_macro = { path = "../ferrolith_macro", version = "0.1.1" }
 
 [dev-dependencies]
 trybuild = "1"

@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-15
+
 ### Fixed
 
 - The return type of a built-in or parametric rule applied to a token
@@ -51,5 +53,6 @@ First release.
   (warning), duplicate or unused precedence declarations.
 - Generated code compiles in crates using the 2021 edition or later.
 
-[Unreleased]: https://github.com/emilienlemaire/ferrolith/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/emilienlemaire/ferrolith/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/emilienlemaire/ferrolith/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/emilienlemaire/ferrolith/releases/tag/v0.1.0
