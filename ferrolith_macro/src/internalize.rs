@@ -385,7 +385,7 @@ fn desargue_symbol(
 fn arg_type(rules: &RuleSet, arg: &GrammarSymbol, tokens_type: &syn::Type) -> Option<syn::Type> {
     match arg {
         GrammarSymbol::Rule(ident) => rules.get(ident)?.ret_type.clone(),
-        GrammarSymbol::Token(_) => Some(tokens_type.clone()),
+        GrammarSymbol::Token(_) | GrammarSymbol::Capture { .. } => Some(tokens_type.clone()),
         // Arguments are instantiated before the application that uses them.
         GrammarSymbol::App { name, args } => rules.get(&app_ident(name, args))?.ret_type.clone(),
         _ => None,
@@ -476,6 +476,13 @@ fn replace_symbol(
 fn replace_symbols(arm: &Arm, params: &[syn::Ident], args: &[GrammarSymbol]) -> Arm {
     let mut new_arm = arm.clone();
     for (param, replacement) in params.iter().zip(args.iter()) {
+        // A capture argument stands for the whole token (`plus(Str(_s))` is
+        // `plus(Str)`): substituted as is, `v @ x` would bind the fields
+        // instead of `v`.
+        let replacement = match replacement {
+            GrammarSymbol::Capture { variant, .. } => &GrammarSymbol::Token(variant.clone()),
+            _ => replacement,
+        };
         new_arm.terms = new_arm
             .terms
             .iter()

@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- A token capture passed to a built-in or parametric rule
+  (`txt @ plus(StrText(_t))`) did not compile: the return type kept the
+  parameter name and the element was never bound. A capture argument now
+  stands for the whole token, so `plus(StrText(_t))` is `plus(StrText)` and
+  returns `Vec<Token>`; its field names are ignored.
+
 ## [0.1.1] - 2026-11-15
 
 ### Fixed

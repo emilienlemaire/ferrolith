@@ -570,6 +570,11 @@
 //! `Option<Vec<ReturnType of expr>>`). The same goes for the parameters of
 //! user-defined parametric rules. `sep` must be a token variant (PascalCase).
 //!
+//! A token capture as an argument stands for the whole token: `plus(Str(_s))` is
+//! `plus(Str)` and returns `Vec<Token>`, and the field names are ignored. To
+//! collect the fields, extract them in a rule (`fn text() -> String { (Str(s)) => s, }`)
+//! and apply the combinator to it: `plus(text)` returns `Vec<String>`.
+//!
 //! ```rust
 //! use ferrolith::grammar;
 //!

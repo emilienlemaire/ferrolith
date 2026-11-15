@@ -270,3 +270,44 @@ mod generic_calling_generic {
         assert_eq!(parse(tokens.into_iter()).unwrap(), vec![1, 2]);
     }
 }
+
+mod capture_arguments {
+    // A capture argument stands for the whole token: `plus(StrText(_t))` is
+    // `plus(StrText)` and returns `Vec<Tok>`, its field names are ignored.
+    use ferrolith::grammar;
+
+    #[derive(Debug, PartialEq)]
+    enum Tok {
+        StrText(String),
+        Semi,
+    }
+
+    grammar! {
+        type Token = Tok;
+
+        // `plus(StrText(_t))` and `plus(StrText(_u))` are the same instance.
+        #[start]
+        fn program() -> (Vec<Tok>, Option<Vec<Tok>>) {
+            (txt @ plus(StrText(_t)), Semi, rest @ opt(plus(StrText(_u)))) => (txt, rest),
+        }
+    }
+
+    fn text(s: &str) -> Tok {
+        Tok::StrText(s.into())
+    }
+
+    #[test]
+    fn parses() {
+        let tokens = [text("a"), text("b"), Tok::Semi, text("c")];
+        assert_eq!(
+            parse(tokens.into_iter()).unwrap(),
+            (vec![text("a"), text("b")], Some(vec![text("c")]))
+        );
+    }
+
+    #[test]
+    fn nested_capture_absent() {
+        let tokens = [text("a"), Tok::Semi];
+        assert_eq!(parse(tokens.into_iter()).unwrap(), (vec![text("a")], None));
+    }
+}
