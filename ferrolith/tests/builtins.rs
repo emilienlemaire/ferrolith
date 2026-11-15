@@ -171,6 +171,17 @@ mod sep {
     fn trailing_separator_is_error() {
         assert!(parse([Tok::Num(1), Tok::Comma].into_iter()).is_err());
     }
+
+    #[test]
+    fn leading_separator_is_error() {
+        assert!(parse([Tok::Comma, Tok::Num(1)].into_iter()).is_err());
+        assert!(parse([Tok::Comma, Tok::Num(1), Tok::Comma, Tok::Num(2)].into_iter()).is_err());
+    }
+
+    #[test]
+    fn lone_separator_is_error() {
+        assert!(parse([Tok::Comma].into_iter()).is_err());
+    }
 }
 
 mod sep_opt {
@@ -225,5 +236,16 @@ mod sep_opt {
     #[test]
     fn trailing_separator_is_error() {
         assert!(parse([Tok::Num(1), Tok::Comma].into_iter()).is_err());
+    }
+
+    #[test]
+    fn leading_separator_is_error() {
+        assert!(parse([Tok::Comma, Tok::Num(1)].into_iter()).is_err());
+        assert!(parse([Tok::Comma, Tok::Num(1), Tok::Comma, Tok::Num(2)].into_iter()).is_err());
+    }
+
+    #[test]
+    fn lone_separator_is_error() {
+        assert!(parse([Tok::Comma].into_iter()).is_err());
     }
 }

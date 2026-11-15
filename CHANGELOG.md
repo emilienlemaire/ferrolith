@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- `sep_opt(sep, x)` accepted a separator before the first element
+  (`, 1, 2` parsed as `[1, 2]`). It now accepts exactly what `sep` does, plus
+  the empty list.
+
 ## [0.1.2] - 2026-11-15
 
 ### Fixed

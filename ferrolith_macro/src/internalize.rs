@@ -12,7 +12,7 @@ use crate::{
 
 struct TypeSubst<'a>(&'a [(syn::Ident, syn::Type)]);
 
-const BUILTIN_SOURCES: [(&str, &str); 5] = [
+const BUILTIN_SOURCES: [(&str, &str); 6] = [
     (
         "star",
         "
@@ -54,8 +54,19 @@ const BUILTIN_SOURCES: [(&str, &str); 5] = [
         "
       fn sep_opt(s, x) -> Vec<x> {
         () => vec![],
+        (xs @ __sep_opt_nonempty(s, x)) => xs,
+      }
+      ",
+    ),
+    // The non-empty lists of `sep_opt`. It is not `sep`, so that redefining `sep`
+    // leaves `sep_opt` unchanged. Recursing on `sep_opt` itself instead would
+    // accept a leading separator.
+    (
+        "__sep_opt_nonempty",
+        "
+      fn __sep_opt_nonempty(s, x) -> Vec<x> {
         (v @ x) => vec![v],
-        (mut xs @ sep_opt(s, x), s, v @ x) => { xs.push(v); xs },
+        (mut xs @ __sep_opt_nonempty(s, x), s, v @ x) => { xs.push(v); xs },
       }
       ",
     ),
